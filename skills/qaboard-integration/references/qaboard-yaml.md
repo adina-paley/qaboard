@@ -49,6 +49,14 @@ aliases:
 ```
 Reuse with YAML anchors; select inputs by metadata; several files: https://samsung.github.io/qaboard/docs/batches-advanced
 
+A batch can also run on **collections**, named versioned lists of inputs saved in QA-Board: `collections:
+[night/hard-cases@2]` next to (or instead of) `inputs`; pin the version in CI. Keep a collection in the repository as
+`collections/<name>.yaml` (`name`, `description`, `database`, `inputs` with globs) or a `.txt` of paths, and save its
+next version with `qa collections save collections/night/hard-cases.yaml` (`--dryrun` shows what changes; an unchanged
+file saves nothing). From code: `qaboard.collections.get("night/hard-cases@2")`, and
+`qaboard.collections.save("night/hard-cases", paths, database=...)`, which records the script and git commit.
+https://samsung.github.io/qaboard/docs/batches-running-on-multiple-inputs#collections
+
 ## artifacts
 What `qa save-artifacts` stores per commit so that runs can be started from the web app later (builds, configuration
 files): `{build: {glob: 'build/*.so'}}`. https://samsung.github.io/qaboard/docs/storage/artifacts

@@ -125,6 +125,12 @@ Configurations are strings or mappings; the project decides what they mean (name
 into `context.params`). Check with `qa --dryrun batch ci`, then run `qa batch ci`: it prints the link to the results in the web app
 (`qa --offline batch ci` keeps them in `output/`). https://samsung.github.io/qaboard/docs/batches-running-on-multiple-inputs
 
+Lists of inputs people curate (hard cases, a training split) are better as **collections**: versioned in QA-Board,
+used with `collections: [night/hard-cases@2]` in a batch. To keep one in the repository, write
+`collections/night/hard-cases.yaml` (`inputs:` paths or globs, optional `name`, `description`, `database`) and run
+`qa collections save collections/night/hard-cases.yaml` (try `--dryrun` first); scripts call
+`qaboard.collections.save(name, paths, database=...)`. Details: `references/qaboard-yaml.md`.
+
 ## 4. Visualizations
 List the files `run()` writes that people should see, in `outputs.visualizations`. The extension picks the viewer:
 images (`.png`, `.jpg`, `.tif`...), videos, Plotly plots (`*.plotly.json`: `{"data": [...], "layout": {...}}`), flame
