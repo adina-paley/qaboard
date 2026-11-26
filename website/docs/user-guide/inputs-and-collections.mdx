@@ -145,3 +145,43 @@ Each `item` is an object, with `id`, `database`, `path` and `absolute_path`: lat
 more to it.
 
 From the shell: `qa collections show night/hard-cases@2` prints the inputs, one per line.
+
+### Save a collection from code {/* #save-from-code */}
+Scripts save collections too, e.g. the inputs a triage script found:
+
+```python
+import qaboard
+
+collection = qaboard.collections.save("night/hard-cases", ["night/street/IMG_0042.raw", "night/street/IMG_0051.raw"],
+                                      database="/mnt/captures", notes="Failures of last night's run")
+print(collection.version, collection.unchanged)
+```
+
+Each call saves the next version, or nothing when the inputs are those of the latest one. The collection's page shows
+where a version saved from code came from: the script, its command line, the machine and the git commit.
+
+To keep a collection in a repository, write its inputs in a file and save it with `qa collections save`:
+
+```yaml title="collections/night/hard-cases.yaml"
+description: Street lights that fool contrast AF
+database: /mnt/captures
+inputs:
+  - night/street/IMG_0042.raw
+  - night/street/*.raw          # globs, like in batch files
+```
+
+```bash
+qa collections save collections/night/hard-cases.yaml --dryrun   # what would change
+qa collections save collections/night/hard-cases.yaml            # saves night/hard-cases@N
+```
+
+<details>
+<summary>Names, lists and conflicts</summary>
+
+- The name is the file's path under its `collections/` folder, without the extension. Elsewhere, give `name:` in the
+  file or `--name`.
+- A `.txt` file lists one path per line; `#` starts a comment.
+- `--database` overrides the file's `database`, which overrides the project's.
+- A glob that matches nothing is an error, so a typo can't drop inputs silently.
+- `save(..., base_version=3)` fails with `CollectionConflict` if someone saved version 4 meanwhile.
+</details>

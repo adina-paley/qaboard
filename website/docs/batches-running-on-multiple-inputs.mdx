@@ -143,6 +143,8 @@ hard-cases:
   skipped with a warning, like other inputs.
 - From scripts: `for item in qaboard.collections.get("night/hard-cases@2"): item.path`, or
   `qa collections show night/hard-cases@2`.
+- To keep a collection's inputs in your repository, save it from a file with `qa collections save`, or from code with
+  `qaboard.collections.save()` ([save from code](/docs/user-guide/inputs-and-collections#save-from-code)).
 
 ## Database and platform {/* #setting-a-custom-database */}
 A batch can set its own `database`, where its inputs are, and its `platform`, like the camera ISP's `bitexact` batch
