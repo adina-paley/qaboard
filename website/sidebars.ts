@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
         },
         'user-guide/milestones',
         'user-guide/inputs-and-collections',
+        'user-guide/annotations',
         'user-guide/trends',
         'user-guide/local-changes',
       ],

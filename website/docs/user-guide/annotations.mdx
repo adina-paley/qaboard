@@ -1,0 +1,72 @@
+---
+id: annotations
+title: Annotations
+sidebar_label: Annotations
+description: "Draw and label rectangles on your inputs, in groups your team edits together, and find inputs by their annotations."
+---
+Mark regions of your inputs, like the defects you see or the patches you want to train on: draw rectangles on an
+input, label them, and keep them in a group your team shares, like `af-team/train-patches`. Then find the inputs that
+have them, and see them on your runs' images.
+
+You'll do three things:
+
+1. [Draw rectangles](#draw): open an input on the **Inputs** page, pick a group, press <kbd>R</kbd> and drag.
+2. [Label and edit them](#edit): select one to move, resize, label or delete it.
+3. [Find inputs by their annotations](#find): filter the Inputs page by group and label.
+
+## Draw rectangles {/* #draw */}
+1. On the [Inputs page](/docs/user-guide/inputs-and-collections), open an input: double-click it, or press
+   <kbd>Enter</kbd>.
+2. In the **Annotations** panel, choose where they go with **Draw into**. The first time, pick **New group…**.
+3. Press <kbd>R</kbd> (or click **Draw**) and drag on the image. Drawing stops after one rectangle: press <kbd>R</kbd>
+   again for the next.
+
+Rectangles are saved as you draw them, in the input's own pixels. **Add rectangle** puts one in the middle of the image,
+to place by typing its coordinates instead of dragging.
+
+### Groups {/* #groups */}
+Every annotation is in a group, named like a path: `af-team/train-patches`, `isp/defects`. A group belongs to your
+project, and its subprojects see it. When you create one, choose who edits it:
+
+- **A team**: the members of one of your QA-Board groups.
+- **The project**: its developers.
+- **Only me**: a personal group, `~you/...`. Nobody else sees it.
+
+Groups you can't edit show without handles. To rename a group, describe it, change its team or archive it, use the
+pencil next to its name.
+
+## Label and edit them {/* #edit */}
+Click a rectangle, or its row in the panel, to select it. Then:
+
+- Drag it to move it, or drag a handle to resize it. Arrows move it by a pixel, with <kbd>Shift</kbd> by ten.
+- Type its exact **Rectangle**: `x`, `y`, width and height, in the input's pixels.
+- Add **Labels**: suggestions come from the labels already used in the group.
+- Add **Fields**, a name and a value each, for anything else to remember.
+- **Delete** it (<kbd>Del</kbd>), and **Undo** from the message if it was a mistake.
+
+<kbd>Esc</kbd> unselects. **History** lists every change to a rectangle: who made it, when, and what it was before.
+If someone changed the same rectangle meanwhile, you see their version, and which of your changes wasn't saved.
+
+## Find inputs by their annotations {/* #find */}
+On the Inputs page, the **Annotations** filters list the groups with how many inputs have annotations in each, and
+their labels. **With annotations** keeps the inputs that have any. Thumbnails show how many annotations an input has.
+The page's link keeps these filters.
+
+## On your runs' images {/* #in-runs */}
+In a run's image viewer, the regions menu lists **QA-Board annotations**, on the run's input and on its outputs: a
+rectangle shows at the same place on images of another size. They're read-only there: edit them from the Inputs page.
+
+<details>
+<summary>Annotations from other apps</summary>
+
+If your administrators connected other annotation apps ([annotations](/docs/backend-admin/annotations)), their groups
+show in the same panel, below QA-Board's, read-only. Copying them into a QA-Board group comes later.
+</details>
+
+<details>
+<summary>Raw inputs, and images the browser can't open</summary>
+
+The viewer shows the server's preview of inputs browsers can't decode, like raw sensor files. Rectangles are still
+saved in the input's pixels when QA-Board knows the input's size; otherwise in the preview's, with its size, so they
+still show at the right place.
+</details>
