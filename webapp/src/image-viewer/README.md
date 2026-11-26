@@ -15,7 +15,7 @@ import '@qaboard/image-viewer/style.css';
 ```
 
 - [Install](#install)
-- [Usage](#usage): images, comparison modes, more than two images, comparing with other images, pixel values (the image's or the displayed ones), regions of interest, sync
+- [Usage](#usage): images, comparison modes, more than two images, comparing with other images, pixel values (the image's or the displayed ones), regions of interest, editable regions, sync
 - [Props](#props)
 - [The difference](#the-difference)
 - [Theming](#theming)
@@ -285,6 +285,42 @@ Control the set shown (`regionSet`, `onRegionSetChange`) to show the same in sev
 to the regions menu with `regionActions`: QA-Board's finds where the images differ for all the runs of a page, then
 ranks the runs.
 
+### Editable regions
+Users can also draw rectangles and change them, e.g. to annotate an image. It's opt-in: give the regions to edit, and
+update them from the callbacks (the viewer doesn't keep them).
+
+```jsx
+const [regions, setRegions] = useState([{ id: 1, x: 120, y: 80, w: 400, h: 300, label: 'chart' }]);
+const [selected, setSelected] = useState(null);
+
+<ImageViewer
+  image={image}
+  editableRegions={regions}
+  selectedRegion={selected}
+  onRegionSelect={setSelected}
+  // with it, a Draw button (r): users drag a rectangle on the image
+  onRegionCreate={({ x, y, w, h, imageWidth, imageHeight }) => setRegions(rs => [...rs, { id: Date.now(), x, y, w, h, imageWidth, imageHeight }])}
+  onRegionChange={(id, { x, y, w, h }) => setRegions(rs => rs.map(r => r.id === id ? { ...r, x, y, w, h } : r))}
+  onRegionDelete={id => setRegions(rs => rs.filter(r => r.id !== id))}
+/>
+```
+
+- **Draw**: the Draw button or <kbd>r</kbd>, then drag on the image. Drawing stops after a rectangle (`keepDrawing` goes
+  on), or with <kbd>Esc</kbd>. Control it with `drawing` / `onDrawingChange`, e.g. to say where rectangles will go.
+- **Select**: click a region (a click elsewhere unselects it, so does <kbd>Esc</kbd>). Control it with `selectedRegion`
+  / `onRegionSelect`, e.g. to show its details next to the viewer.
+- **Change**: drag the selected region to move it, one of its 8 handles to resize it; the arrows move it by a pixel
+  (<kbd>Shift</kbd>: 10), <kbd>Delete</kbd> deletes it. `onRegionChange` is called once users release it, or stop
+  pressing the arrows for a moment (with `reason`: `'move'`, `'resize'` or `'nudge'`).
+- Regions are in **whole pixels, inside the image**: of the image shown, or of an image of `imageWidth` x `imageHeight`
+  (e.g. the full-size image an annotation was drawn on, shown here downscaled): they're scaled like `regionSets`', and
+  edits stay in their own pixels. Drawn rectangles come in the pixels of the image shown, with its size.
+- `readOnly: true` regions show without handles, and can be selected. Elsewhere on the image, drags still pan and the
+  wheel zooms.
+- They're edited on the first image (not in tiles of more than two images). For users without a pointer, offer a way
+  to add a rectangle (`centeredRect(size)` makes one in the middle of the image) and to type its coordinates: the
+  arrows then move it.
+
 ### Blind test
 **Blind test** (next to Swap, or <kbd>h</kbd>) shows the images in a random order, called A and B in the labels, the
 values under the pointer, the histograms and the menus. **Reveal** then shows which was which, and **Done** goes back
@@ -354,6 +390,11 @@ resolution), and show a cross where the pointer is on the others. Viewers off-sc
 | `regionSets` | `[{ id, label, regions?, loading?, error?, load?, empty?, settings?, section?, overview?, announce?, noun? }]` | `[]` | Regions of interest |
 | `regionSet`, `defaultRegionSet`, `onRegionSetChange` | `string \| null` | | The set shown (`null`: the full image) |
 | `regionActions` | `[{ id, label, icon?, title?, onClick }]` | `[]` | Your actions in the regions menu |
+| `editableRegions` | `[{ id, x, y, w, h, label?, color?, imageWidth?, imageHeight?, readOnly? }]` | | [Regions users edit](#editable-regions) on the first image |
+| `selectedRegion`, `defaultSelectedRegion`, `onRegionSelect` | id or `null` | `null` | The editable region selected |
+| `drawing`, `defaultDrawing`, `onDrawingChange`, `keepDrawing` | `boolean` | `false` | Whether users draw a rectangle by dragging (r) |
+| `onRegionCreate`, `onRegionChange`, `onRegionDelete` | `({ x, y, w, h, imageWidth, imageHeight })`, `(id, { x, y, w, h }, { reason })`, `(id)` | | Drawn, moved or resized, deleted |
+| `onImageSize` | `({ width, height }) => void` | | The first image's size, once known |
 | `swapped`, `defaultSwapped`, `onSwappedChange` | `boolean` | `false` | The reference shows first. Control it to swap several viewers at once |
 | `blindTest`, `onBlindTestChange` | `{ a: 'A' \| 'B', revealed? } \| null` | | [A blind test](#blind-test), controlled, e.g. for every viewer of a page |
 | `maxHeight` | `number \| (windowHeight) => number` | `h => h - 160` | The highest images can be |
@@ -362,13 +403,15 @@ resolution), and show a cross where the pointer is on the others. Viewers off-sc
 | `className`, `style` | | | On the viewer's root |
 
 The types are in `index.d.ts`. The package also exports helpers: `iiifUrl`, `thumbnailUrl`, `openImage`,
-`DIFF_METHODS`, `normalizeDiff`, `diffAt`, `regionAsYaml`, `scaleRegion`, `clipRegion`, `MODES`.
+`DIFF_METHODS`, `normalizeDiff`, `diffAt`, `regionAsYaml`, `scaleRegion`, `clipRegion`, `centeredRect`, `clampRect`,
+`snapRect`, `MODES`.
 
 ### Keyboard
 Anywhere on the page: for the viewer in full screen, else under the mouse, else that has the focus, else the one used
 last if it's in view, else the first in view. <kbd>1</kbd>–<kbd>4</kbd> the mode, <kbd>t</kbd> toggle: in single mode
 the other image (like a click on the image), else swap the sides (or the order of the difference alone), <kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd> zoom, <kbd>p</kbd> pixel values, <kbd>a</kbd> analysis panel,
-<kbd>h</kbd> blind test (then reveal, then end), <kbd>c</kbd> compare with the reference, or the image of `compareWith` picked last, <kbd>f</kbd> full screen (<kbd>Esc</kbd> leaves), <kbd>[</kbd> <kbd>]</kbd> previous / next region, <kbd>o</kbd> the regions' outlines. The wheel or a pinch zooms, a drag pans, a
+<kbd>h</kbd> blind test (then reveal, then end), <kbd>c</kbd> compare with the reference, or the image of `compareWith` picked last, <kbd>f</kbd> full screen (<kbd>Esc</kbd> leaves), <kbd>[</kbd> <kbd>]</kbd> previous / next region, <kbd>o</kbd> the regions' outlines. With editable regions:
+<kbd>r</kbd> draw, the arrows move the selected one, <kbd>Delete</kbd> deletes it, <kbd>Esc</kbd> stops drawing, then unselects. The wheel or a pinch zooms, a drag pans, a
 double-click zooms in.
 
 
@@ -433,6 +476,7 @@ The viewer inherits the font of the page.
 | `analysis.js`, `analysisPanel.jsx`, `profilePlot.jsx` | The analysis panel: histogram, row and column profiles, statistics of the view (displayed values) |
 | `cfa.js`, `imageAnalysis.js`, `regionValues.js`, `sensorPanel.jsx` | The analysis of the image's own values: CFAs and their guess, reading the view with `getPixels`, the sensor's card |
 | `adjustments.js` | Display adjustments, as an SVG filter: they don't touch the pixels we read |
+| `regionEditor.jsx`, `regionEditing.js` | Editable regions: the overlay that draws, moves and resizes them, and its geometry (pure functions) |
 | `regions.js`, `pixels.js`, `colormaps.js` | Helpers |
 | `ui.jsx`, `icons.js`, `image-viewer.css` | Buttons, menus, icons (from Blueprint): the viewer doesn't need a UI kit |
 

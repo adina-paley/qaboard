@@ -68,7 +68,7 @@ export const AnnotationGroups = ({ source, groups, noun = 'group', label }) => {
       {group.url && <AnchorButton size="small" variant="minimal" icon="share" href={group.url} target="_blank" rel="noopener noreferrer" title={`Open ${group.label} in ${label}`} />}
     </div>)}
     <div className="qaboard-annotation-groups-footer qaboard-muted">
-      Remembered in this browser, for every image. Until you pick, you see yours.
+      Remembered in this browser, for every image. Until you pick, you see {groups.some(group => group.shown) ? 'them all' : 'yours'}.
     </div>
   </div>;
   return <span className="qaboard-annotation-groups-inline">

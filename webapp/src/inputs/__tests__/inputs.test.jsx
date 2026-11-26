@@ -111,7 +111,7 @@ describe('the API', () => {
   });
 
   test('unknown sorts and folders are normalized from the URL', () => {
-    expect(inputs_filters_from_query({ sort: 'size', folder: ' a//b/ ', live: 'false' })).toEqual({ q: '', folder: 'a/b', database: '', live: false, sort: 'last_run' });
+    expect(inputs_filters_from_query({ sort: 'size', folder: ' a//b/ ', live: 'false' })).toEqual({ q: '', folder: 'a/b', database: '', live: false, sort: 'last_run', annotation_group: '', label: '', annotated: false });
   });
 
   test('collections: keys, the project users look from, every member', async () => {

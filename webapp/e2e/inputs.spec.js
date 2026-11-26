@@ -1,4 +1,5 @@
 // The Inputs page, the Collections page and a collection's page, against a mocked API: they load, select, open the viewer, without errors.
+import zlib from 'node:zlib';
 import { test, expect } from '@playwright/test';
 
 const project = 'group/repo';
@@ -94,4 +95,84 @@ test('the Collections page, from the sidebar', async ({ page }) => {
   await page.getByRole('button', { name: 'New collection' }).click();
   await page.getByRole('region', { name: 'New collection' }).getByRole('link', { name: /Select inputs/ }).click();
   await expect(page).toHaveURL(new RegExp(`/${project}/inputs`));
+});
+
+// A PNG of w x h pixels (a gradient), for an input browsers decode: the image viewer opens its file
+const crc_table = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = buffer => {
+  let c = 0xffffffff;
+  for (const byte of buffer) c = crc_table[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const png = (w, h) => {
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(w, 0);
+  header.writeUInt32BE(h, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.concat(Array.from({ length: h }, (_, y) => Buffer.from([0, ...Array.from({ length: w }, (_, x) => [x % 256, y % 256, 128]).flat()])));
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+};
+
+test('inputs: draw an annotation in the viewer', async ({ page }) => {
+  const chart = { id: 31, database: '/data', path: 'day/chart.png', name: 'chart.png', folder: 'day', runs: 1, first_run_at: '2026-09-01T10:00:00Z', last_run_at: '2026-09-02T10:00:00Z' };
+  const sandbox = { id: 5, project, name: '~alice/sandbox', description: '', team: null, personal: true, can_edit: true, can_manage: true, archived: false, inherited: false, count: 0 };
+  const created = [];
+  // after beforeEach's: these routes win
+  await page.route('**/api/v1/annotation-groups**', route => route.fulfill({ json: { groups: [sandbox], can_create: true, can_share: true, my_teams: [] } }));
+  await page.route('**/api/v1/inputs/31**', async route => {
+    const request = route.request();
+    const { pathname } = new URL(request.url());
+    if (pathname.endsWith('/file')) return route.fulfill({ body: png(400, 200), contentType: 'image/png' });
+    if (pathname.endsWith('/annotations') && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      created.push(body);
+      return route.fulfill({ status: 201, json: { id: 100, input: 31, ...body, version: 1, can_edit: true, created_by: { id: 1, user_name: 'alice' }, created_at: '2026-11-26T10:00:00Z' } });
+    }
+    if (pathname.endsWith('/annotations')) return route.fulfill({ json: { annotations: [], groups: [sandbox] } });
+    return route.fulfill({ json: { ...chart, runs: [] } });
+  });
+  await page.goto(`/${project}/inputs?input=31`);
+  const viewer = page.getByRole('dialog', { name: /chart.png/ });
+  await expect(viewer).toBeVisible();
+  const panel = viewer.getByRole('region', { name: 'Annotations' });
+  await expect(panel.getByRole('combobox', { name: 'Draw into' })).toHaveValue('5');
+  // the image, then the Draw tool (r): drag on it
+  const editor = viewer.getByTestId('qiv-region-editor');
+  await expect(viewer.getByRole('button', { name: 'Draw', exact: true })).toBeVisible();
+  // the image is shown (its zoom is known)
+  await expect(viewer.locator('.qiv-zoom')).toHaveText(/%/);
+  await page.mouse.move(1, 1);
+  await page.keyboard.press('r');
+  await expect(viewer.getByRole('button', { name: 'Draw', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  const box = await editor.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.6, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => created.length).toBe(1);
+  expect(created[0]).toMatchObject({ group: 5, method: 'manual', image_width: 400, image_height: 200 });
+  expect(created[0].w).toBeGreaterThan(10);
+  expect(created[0].h).toBeGreaterThan(10);
+  // selected, to label it and adjust its rectangle; drawing stopped
+  const details = panel.getByRole('region', { name: 'Selected annotation' });
+  await expect(details.getByRole('textbox', { name: 'w (pixels)' })).toHaveValue(String(created[0].w));
+  await expect(viewer.getByRole('button', { name: 'Draw', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  // Esc unselects first, then closes the viewer
+  await page.keyboard.press('Escape');
+  await expect(details).toHaveCount(0);
+  await expect(viewer).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
 });

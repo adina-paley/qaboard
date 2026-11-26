@@ -388,9 +388,10 @@ const ImageViewerForRuns = ({
   // the regions where the images differ: of the image and the other image of the run, or its reference
   const [diff_size, setDiffSize] = useDiffSize();
   const names = { new: labels?.new ?? 'new', reference: labels?.reference ?? 'reference' };
+  // project: what QA-Board's annotation groups are seen from
   const region_context = other
-    ? { output_new, output_ref: output_new, path, path_ref: other, diff_size, boxes, names }
-    : { output_new, output_ref: has_reference ? output_ref : null, path, path_ref, diff_size, boxes, boxes_ref: has_reference ? boxes_ref : undefined, names };
+    ? { output_new, output_ref: output_new, path, path_ref: other, diff_size, boxes, names, project }
+    : { output_new, output_ref: has_reference ? output_ref : null, path, path_ref, diff_size, boxes, boxes_ref: has_reference ? boxes_ref : undefined, names, project };
   const region_sets = useRegionSets(region_context, signed_in, setDiffSize);
   const page = usePageKey();
   const chosen = useRegionSetStore(state => state.by_path[path]);

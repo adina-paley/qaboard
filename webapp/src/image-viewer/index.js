@@ -5,3 +5,4 @@ export { DIFF_METHODS, DEFAULT_DIFF, normalizeDiff, diffAt } from './metrics';
 export { DEFAULT_ADJUSTMENTS, normalizeAdjustments } from './adjustments';
 export { iiifUrl, openImage, thumbnailUrl } from './sources';
 export { regionAsYaml, scaleRegion, clipRegion } from './regions';
+export { centeredRect, clampRect, snapRect } from './regionEditing';

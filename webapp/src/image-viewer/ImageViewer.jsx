@@ -11,6 +11,8 @@ import { candidateLabel, CompareWithMenu } from './compareWith';
 import { describeAdjustments, filterPrimitives, normalizeAdjustments, changedAdjustments } from './adjustments';
 import { DEFAULT_DIFF, normalizeDiff } from './metrics';
 import { regionAsYaml } from './regions';
+import { NUDGE, nudgeRect, regionAt, regionFrame } from './regionEditing';
+import { RegionEditor } from './regionEditor';
 import { DEFAULT_MODE, MODES } from './modes';
 import { imageColors, imageKey, normalizeImage } from './sources';
 import { PixelTiles } from './pixelTiles';
@@ -73,6 +75,7 @@ const N_WAY_MODES = MODES.map(m => ({ ...m, label: m.value === 'side-by-side' ? 
 let last_analysis;
 
 const clamp = (x, min, max) => Math.min(max, Math.max(min, x));
+const NUDGE_KEYS = new Set(Object.keys(NUDGE));
 
 // the toolbars of the page stay in view
 const DEFAULT_MAX_HEIGHT = window_height => window_height - 160;
@@ -154,6 +157,19 @@ export const ImageViewer = ({
   defaultRegionSet = null,
   onRegionSetChange,
   regionActions = [],
+  // Editable regions (opt-in): drawn, selected, moved and resized on the first image. See README.md.
+  editableRegions,
+  selectedRegion: selected_region_prop,
+  defaultSelectedRegion = null,
+  onRegionSelect,
+  drawing: drawing_prop,
+  defaultDrawing = false,
+  onDrawingChange,
+  keepDrawing = false,
+  onRegionCreate,
+  onRegionChange,
+  onRegionDelete,
+  onImageSize,
   swapped: swapped_prop,
   defaultSwapped = false,
   onSwappedChange,
@@ -477,6 +493,63 @@ export const ImageViewer = ({
     setMessage(text);
     setTimeout(() => setMessage(m => m === text ? null : m), 2500);
   };
+
+  // Editable regions, on the first image (regionEditor.jsx): with editableRegions, or onRegionCreate to draw new ones.
+  // They're in the pixels of their image (imageWidth x imageHeight, else the image shown), like regionSets'.
+  const editing = editableRegions !== undefined || !!onRegionCreate;
+  const editable_regions = editableRegions ?? [];
+  const [selected_region_setting, setSelectedRegionSetting] = useControllable(selected_region_prop, defaultSelectedRegion, onRegionSelect);
+  const selected_region = editable_regions.find(region => region.id === selected_region_setting) ?? null;
+  const can_edit = region => !!region && !region.readOnly && !!onRegionChange;
+  const [drawing_setting, setDrawingSetting] = useControllable(drawing_prop, defaultDrawing, onDrawingChange);
+  const can_draw = !!onRegionCreate;
+  const drawing = can_draw && !!drawing_setting;
+  // The editor shows on the first image, when it shows (not with more than two images, nor under the difference alone)
+  const editor_shown = editing && !n_way && !(mode === 'single' && first !== 'a') && !(mode === 'difference' && diff_layout === 'alone');
+  const setDrawing = value => {
+    if (value === drawing) return;
+    setDrawingSetting(value);
+    if (value) notify('Drag on the image to draw a rectangle (Esc stops)');
+  };
+  // Moved with the arrows: shown at once, saved once users stop for a moment (one change, not one per key)
+  const [nudged, setNudged] = useState(null);
+  const nudged_ref = useRef(null);
+  const nudge_timer = useRef(null);
+  const flushNudge = () => {
+    clearTimeout(nudge_timer.current);
+    const pending = nudged_ref.current;
+    nudged_ref.current = null;
+    setNudged(null);
+    if (pending) onRegionChange?.(pending.id, pending.rect, { reason: 'nudge' });
+  };
+  const flush_nudge = useRef(flushNudge);
+  useLayoutEffect(() => { flush_nudge.current = flushNudge; });
+  useEffect(() => () => flush_nudge.current(), []);
+  const selectEditable = id => {
+    if (nudged_ref.current && nudged_ref.current.id !== id) flushNudge();
+    setSelectedRegionSetting(id);
+  };
+  const nudge = (key, shift) => {
+    const region = selected_region;
+    const current = nudged_ref.current?.id === region.id ? nudged_ref.current.rect : region;
+    const rect = nudgeRect(current, key, { shift }, regionFrame(region, size_a));
+    if (!rect) return;
+    nudged_ref.current = { id: region.id, rect };
+    setNudged(nudged_ref.current);
+    clearTimeout(nudge_timer.current);
+    nudge_timer.current = setTimeout(() => flush_nudge.current(), 600);
+  };
+  const createRegion = rect => {
+    if (!keepDrawing) setDrawingSetting(false);
+    onRegionCreate?.(rect);
+  };
+  // The size of the first image, for the app, e.g. to make regions in its pixels
+  const image_width = size_a?.width ?? null;
+  const image_height = size_a?.height ?? null;
+  useEffect(() => {
+    if (image_width && image_height) onImageSize?.({ width: image_width, height: image_height });
+    // oxlint-disable-next-line react/exhaustive-deps -- when the size changes
+  }, [image_width, image_height]);
   // Picking what to compare with. c goes back to the reference, then to the image picked last.
   const [picker_open, setPickerOpen] = useState(false);
   // Where a pick applies, e.g. every run of the page or this one: the app's options ({ value, label, title?, phrase? })
@@ -511,6 +584,14 @@ export const ImageViewer = ({
   // shown alone shows the other: there, Shift+click pins.
   useLayoutEffect(() => {
     controller.setOnClick((name, event, element) => {
+      // editable regions: a click selects the region there, or unselects
+      if (editor_shown && name === 'a' && event && editable_regions.length > 0) {
+        const point = controller.pointAt(name, event.clientX, event.clientY, element);
+        const at = controller.imageCoordinates('a', point);
+        const index = at ? regionAt(editable_regions, at, size_a) : null;
+        if (index !== null) return selectEditable(editable_regions[index].id);
+        if (selected_region) return selectEditable(null);
+      }
       if (single && !event?.shiftKey) return flip();
       if (event) {
         controller.pin(name, event.clientX, event.clientY, element);
@@ -572,6 +653,30 @@ export const ImageViewer = ({
         setShown(index);
         if (!single) setMode('single');
         return true;
+      }
+      // Editable regions: r draws, Delete deletes the selected region, the arrows move it, Esc stops drawing, then unselects
+      if (editing) {
+        if ((event.key === 'r' || event.key === 'R') && can_draw && editor_shown) {
+          setDrawing(!drawing);
+          return true;
+        }
+        if ((event.key === 'Delete' || event.key === 'Backspace') && can_edit(selected_region) && onRegionDelete) {
+          flushNudge();
+          onRegionDelete(selected_region.id);
+          return true;
+        }
+        if (NUDGE_KEYS.has(event.key) && can_edit(selected_region) && editor_shown) {
+          nudge(event.key, event.shiftKey);
+          return true;
+        }
+        if (event.key === 'Escape' && drawing) {
+          setDrawingSetting(false);
+          return true;
+        }
+        if (event.key === 'Escape' && selected_region) {
+          selectEditable(null);
+          return true;
+        }
       }
       switch (event.key) {
         case '1': case '2': case '3': case '4':
@@ -742,6 +847,19 @@ export const ImageViewer = ({
     <ImageHighlightLayer controller={controller} pane={name} mask={show_analysis ? image_masks?.[name] : null} active={visible && shown(name)} width={pane_width} height={pane_height} />
     {pixelValues(name)}
     {shown(name) && regionOutlines(name)}
+    {name === 'a' && editor_shown && shown('a') && <RegionEditor
+      controller={controller}
+      pane="a"
+      regions={editable_regions}
+      selected={selected_region?.id ?? null}
+      draft={nudged}
+      size={size_a}
+      drawing={drawing}
+      canEdit={can_edit}
+      onSelect={selectEditable}
+      onCreate={createRegion}
+      onChange={(id, rect, details) => onRegionChange?.(id, rect, details)}
+    />}
     <Crosshair controller={controller} pane={name} />
     {show_analysis && <GuideLine controller={controller} guide={guide} />}
     {n_way ? name === 'a' && !single && <span className="qiv-label qiv-label-left qiv-primary" title="The anchor: the other images are compared with it. Click another image's name to make it the anchor.">
@@ -884,6 +1002,16 @@ export const ImageViewer = ({
         <Icon icon="warning-sign" size={12} /> different aspect ratios
       </span>}
       {toolbarExtra}
+      {can_draw && editor_shown && <Button
+        icon="draw-rectangle"
+        text="Draw"
+        title={drawing ? 'Stop drawing (r or Esc)' : 'Draw a rectangle: drag on the image (r)'}
+        className={drawing ? 'qiv-intent' : ''}
+        active={drawing}
+        aria-pressed={drawing}
+        aria-keyshortcuts="r"
+        onClick={() => setDrawing(!drawing)}
+      />}
       <Popover align="end" button={props => <Button
         {...props}
         icon="detection"

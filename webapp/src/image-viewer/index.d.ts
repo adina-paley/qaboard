@@ -121,6 +121,31 @@ export interface RegionSet {
   total?: number;
 }
 
+/** A rectangle in whole pixels: x, y its top-left corner, w and h at least 1 */
+export interface RegionRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A region users can select, move and resize on the image (see `editableRegions`). Like a Region, it's in the pixels of
+ * the image shown, or of an image of size imageWidth x imageHeight: it's scaled, and edits stay in its own pixels.
+ */
+export interface EditableRegion extends Region {
+  /** What identifies it in the callbacks */
+  id: string | number;
+  /** Shown, and selectable, without handles: users can't move or resize it */
+  readOnly?: boolean;
+}
+
+/** A rectangle drawn by users, in the pixels of the image shown, whose size it says */
+export interface DrawnRegion extends RegionRect {
+  imageWidth: number;
+  imageHeight: number;
+}
+
 /** A blind test: what the image (`image`, not `reference`) is called, and whether users revealed which is which */
 export interface BlindTest {
   a: 'A' | 'B';
@@ -302,6 +327,37 @@ export interface ImageViewerProps {
   /** The app's actions in the regions menu */
   regionActions?: RegionAction[];
 
+  /**
+   * Editable regions (opt-in), on the first image: users select one with a click, move it by dragging, resize it by its
+   * 8 handles, move it with the arrows (Shift: 10 pixels), delete it with Delete, unselect it with Esc. Read-only ones
+   * show without handles. The viewer doesn't keep them: update them from the callbacks.
+   */
+  editableRegions?: EditableRegion[];
+  /** The id of the selected editable region (null: none), controlled with onRegionSelect, or not */
+  selectedRegion?: string | number | null;
+  defaultSelectedRegion?: string | number | null;
+  onRegionSelect?: (id: string | number | null) => void;
+  /**
+   * Whether users draw a rectangle by dragging on the image (r, or the Draw button, toggles it; Esc stops), controlled
+   * with onDrawingChange, or not. Needs onRegionCreate.
+   */
+  drawing?: boolean;
+  defaultDrawing?: boolean;
+  onDrawingChange?: (drawing: boolean) => void;
+  /** Drawing goes on after a rectangle. Default: false, it stops */
+  keepDrawing?: boolean;
+  /** A rectangle drawn, in the pixels of the image shown (whole, inside it). With it, the toolbar has a Draw button */
+  onRegionCreate?: (region: DrawnRegion) => void;
+  /**
+   * A region moved or resized, in its own pixels (whole, inside its image): once users release it, or stop pressing
+   * the arrows for a moment
+   */
+  onRegionChange?: (id: string | number, rect: RegionRect, details: { reason: 'move' | 'resize' | 'nudge' }) => void;
+  /** Users pressed Delete on the selected region */
+  onRegionDelete?: (id: string | number) => void;
+  /** The size of the first image, once known and when it changes */
+  onImageSize?: (size: { width: number; height: number }) => void;
+
   /** The reference shows first (left, or in single mode), controlled with onSwappedChange, e.g. for every viewer of a page */
   swapped?: boolean;
   defaultSwapped?: boolean;
@@ -375,3 +431,9 @@ export declare function thumbnailUrl(image: ImageSource, region?: Region | null,
 export declare function regionAsYaml(region: Region, size: { width: number; height: number }): string;
 export declare function scaleRegion(region: Region, size: { width: number; height: number }): Region;
 export declare function clipRegion(region: Region, size: { width: number; height: number }): Region | null;
+/** A rectangle in the middle of an image, `fraction` of its size (default a quarter): e.g. for an "Add rectangle" button */
+export declare function centeredRect(size: { width: number; height: number }, fraction?: number): RegionRect;
+/** In whole pixels, at least 1x1, inside an image of that size when it's given */
+export declare function clampRect(rect: RegionRect, size?: { width: number; height: number }): RegionRect;
+/** Whole pixels: the edges are rounded */
+export declare function snapRect(rect: RegionRect): RegionRect;

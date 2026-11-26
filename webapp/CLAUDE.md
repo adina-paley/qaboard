@@ -39,7 +39,7 @@ lazily, and their CSS doesn't leak. Don't import the app from them.
 
 | Page | Shows |
 |---|---|
-| `/image-viewer.html` (`?images=5`) | The image viewer alone; with N images, the tiles compared with an anchor |
+| `/image-viewer.html` (`?images=5`, `?edit`) | The image viewer alone; with N images, the tiles compared with an anchor; `?edit`: editable regions (draw, move, resize) |
 | `/junit-viewer.html?tests=50000` | JUnit test reports (`src/viewers/junit/`) |
 | `/benchmark-viewer.html?benchmarks=5000` | Benchmarks (`src/viewers/benchmarks/`) |
 | `/flame-graph-viewer.html?stacks=300000` | Flame graphs: a new and a reference profile that differ in known ways (`flamegraph/generate.js`) |

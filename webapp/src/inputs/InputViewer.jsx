@@ -12,6 +12,8 @@ import { is_typing } from "../components/HelpSheet";
 import { copyWithToast } from "../utils/clipboard";
 import { path_segment, stringify_query } from "../selection";
 import { inputQuery, input_name, input_file_url, thumbnail_url, is_browser_image, database_label } from "./api";
+import { useAnnotationEditor } from "./useAnnotationEditor";
+import { AnnotationsPanel } from "./AnnotationsPanel";
 
 const InputImage = lazy(() => import("./InputImage"));
 
@@ -195,7 +197,8 @@ const useImageStatus = url => {
 };
 
 // The file when browsers decode its format and it loads, else the server's preview
-const InputPicture = ({ input }) => {
+// editing: the image viewer's props for the annotations (useAnnotationEditor)
+const InputPicture = ({ input, editing }) => {
   const browser_image = is_browser_image(input.path);
   const file = browser_image ? input_file_url(input) : null;
   const file_status = useImageStatus(file);
@@ -218,6 +221,7 @@ const InputPicture = ({ input }) => {
       syncKey={`input-${input.id}`}
       image={{ url, label: input_name(input), href: use_preview ? input_file_url(input) : url }}
       notice={use_preview ? <Tag minimal icon="info-sign" title="Browsers can't decode this format: the server decoded it into a JPEG (1024 pixels at most)">preview</Tag> : undefined}
+      editing={editing}
     />
   </Suspense>;
 };
@@ -280,6 +284,8 @@ const Key = ({ children }) => <kbd className={Classes.KEY}>{children}</kbd>;
 // `selected` / `onToggleSelected`: to (un)select it from here.
 export const InputViewer = ({ project, count, item_at, loadMore, index, onIndexChange, onClose, selected, onToggleSelected, context }) => {
   const input = item_at(index);
+  // the input's annotations: drawn and edited in the image viewer, listed in the panel
+  const annotations = useAnnotationEditor({ project, input });
   const has_previous = index > 0;
   const has_next = index < count - 1;
   const previous = () => has_previous && onIndexChange(index - 1);
@@ -295,6 +301,8 @@ export const InputViewer = ({ project, count, item_at, loadMore, index, onIndexC
   useEffect(() => {
     const onKeyDown = event => {
       if (event.defaultPrevented || is_typing(event.target) || event.target.closest?.('[role="slider"], [role="menu"], [role="listbox"]')) return;
+      // the arrows move the selected annotation (the image viewer)
+      if (annotations.selected !== null) return;
       if (event.key === 'ArrowLeft' && !event.altKey && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();
         previous();
@@ -313,7 +321,8 @@ export const InputViewer = ({ project, count, item_at, loadMore, index, onIndexC
     childRef={shell}
     isOpen
     onClose={onClose}
-    canEscapeKeyClose
+    // Esc stops drawing, unselects the annotation, or closes the group's dialog first
+    canEscapeKeyClose={!annotations.captures_escape}
     hasBackdrop={false}
     autoFocus
     enforceFocus
@@ -340,17 +349,19 @@ export const InputViewer = ({ project, count, item_at, loadMore, index, onIndexC
           <div className="qa-viewer-stage">
             <Button className="qa-viewer-arrow" icon="chevron-left" size="large" aria-label="Previous input" disabled={!has_previous} onClick={previous}/>
             <div className="qa-viewer-image">
-              {input ? <InputPicture key={input.id} input={input}/> : <Spinner size={32} aria-label="Loading the input"/>}
+              {input ? <InputPicture key={input.id} input={input} editing={annotations.viewer}/> : <Spinner size={32} aria-label="Loading the input"/>}
             </div>
             <Button className="qa-viewer-arrow" icon="chevron-right" size="large" aria-label="Next input" disabled={!has_next} onClick={next}/>
           </div>
           <div className={`qa-viewer-keys ${Classes.TEXT_MUTED}`}>
-            <span><Key>←</Key> <Key>→</Key> previous / next</span>
+            <span><Key>←</Key> <Key>→</Key> {annotations.selected !== null ? 'move the annotation (Shift: 10 px)' : 'previous / next'}</span>
+            {annotations.can_draw && <span><Key>R</Key> draw, <Key>Del</Key> delete</span>}
             <span><Key>f</Key> full screen, <Key>+</Key> <Key>−</Key> zoom, <Key>a</Key> histogram</span>
-            <span><Key>Esc</Key> back to the grid</span>
+            <span><Key>Esc</Key> {annotations.drawing ? 'stop drawing' : annotations.selected !== null ? 'unselect' : 'back to the grid'}</span>
           </div>
         </div>
         {input && <aside className="qa-viewer-aside" aria-label="About this input">
+          <AnnotationsPanel editor={annotations}/>
           <section>
             <h2>Details</h2>
             <dl>

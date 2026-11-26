@@ -587,6 +587,18 @@ export class Comparison {
     return () => tracker.destroy();
   }
 
+  // The wheel over an element above a pane (e.g. the regions being edited) zooms like over the image: scroll is +1 to
+  // zoom in, -1 to zoom out, at the pointer
+  zoomAt(pane, clientX, clientY, scroll, element = null) {
+    const name = this.geometry(pane);
+    const viewer = this.viewers[name];
+    if (!viewer) return;
+    this.lead(name);
+    const point = this.pointAt(pane, clientX, clientY, element);
+    viewer.viewport.zoomBy(viewer.zoomPerScroll ** scroll, point ?? undefined);
+    viewer.viewport.applyConstraints();
+  }
+
   unhover() {
     this.hovered = null;
     if (this.pointer?.pinned) return;
@@ -653,6 +665,14 @@ export class Comparison {
     const iy = Math.floor(y);
     if (ix < 0 || iy < 0 || ix >= entry.width || iy >= entry.height) return null;
     return { x: ix, y: iy };
+  }
+
+  // The point of an image (in its pixels, fractional) at a viewport point, inside it or not
+  imageCoordinates(name, point) {
+    const item = this.images[name]?.item;
+    if (!item || !point) return null;
+    const { x, y } = item.viewportToImageCoordinates(point.x, point.y, true);
+    return { x, y };
   }
 
   // The displayed color at a viewport point: [r, g, b, a], or null

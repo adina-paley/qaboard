@@ -808,6 +808,87 @@
   opacity: 0.75;
 }
 
+/* Editable regions (regionEditor.jsx): only what's edited takes the pointer, else drags pan the image */
+.qiv-editor {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+}
+.qiv-editor svg {
+  display: block;
+  pointer-events: none;
+}
+.qiv-editor-drawing {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+.qiv-editor-focus .qiv-outline:not(.qiv-outline-active) {
+  opacity: 0.6;
+}
+.qiv-outline-readonly .qiv-outline-line {
+  stroke-dasharray: 4 3;
+}
+.qiv-edit-drawn {
+  fill: rgba(255, 255, 255, 0.08);
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+}
+.qiv-edit-body {
+  position: absolute;
+  box-sizing: border-box;
+  cursor: move;
+  pointer-events: auto;
+  touch-action: none;
+}
+.qiv-editor-drawing .qiv-edit-body {
+  cursor: crosshair;
+}
+.qiv-edit-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -5px 0 0 -5px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--qiv-accent);
+  border-radius: 1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+/* larger targets than they look, for touch */
+.qiv-edit-handle::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+}
+.qiv-edit-handle-nw { left: 0; top: 0; }
+.qiv-edit-handle-n { left: 50%; top: 0; }
+.qiv-edit-handle-ne { left: 100%; top: 0; }
+.qiv-edit-handle-e { left: 100%; top: 50%; }
+.qiv-edit-handle-se { left: 100%; top: 100%; }
+.qiv-edit-handle-s { left: 50%; top: 100%; }
+.qiv-edit-handle-sw { left: 0; top: 100%; }
+.qiv-edit-handle-w { left: 0; top: 50%; }
+.qiv-edit-size {
+  position: absolute;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: rgba(17, 20, 24, 0.85);
+  color: #fff;
+  font-family: var(--qiv-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.qiv-muted-label {
+  font-style: italic;
+}
+
 /* The analysis panel: histogram, profiles, statistics */
 .qiv-analysis {
   margin-top: 6px;

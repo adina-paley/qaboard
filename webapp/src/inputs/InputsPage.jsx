@@ -1,6 +1,7 @@
 // /<project>/inputs: every input the project's runs (and its subprojects') used, to find some and save them as a
 // collection. The URL says what's shown, so links can be shared:
 //   ?q=<search>&folder=<path prefix>&database=<database>&live=0 (also inputs whose runs were all deleted)&sort=path&input=<id> (the viewer)
+//   &annotation_group=<id>&label=<label>&annotated=1: by their annotations (docs/design/annotations.md)
 //   &add_to=<collection id>: users came from a collection to add inputs to it
 // Selecting: by hand in the grid, "Select all loaded", or "Select all N matching" (the ids of every match, up to what a
 // collection holds, from GET /inputs?fields=id: the dialogs work from ids, without every Input loaded).
@@ -277,6 +278,11 @@ const HowItWorks = ({ onDismiss }) => <Guide aria-label="How collections work">
   <Button variant="minimal" icon="cross" aria-label="Hide how collections work" onClick={onDismiss} style={{ alignSelf: 'flex-start', marginLeft: 'auto' }}/>
 </Guide>;
 
+// The count of annotations on a thumbnail, in the groups shown (or the group filtered by)
+export const annotations_badge = input => input?.annotations > 0
+  ? <Tag round intent={Intent.PRIMARY} icon="draw" title={`${plural(input.annotations, 'annotation')} in the groups shown`}>{input.annotations.toLocaleString()}</Tag>
+  : null;
+
 const FacetRow = ({ name, count, pressed, onClick, icon, title }) => <li>
   <button type="button" className="qa-facet-row" aria-pressed={pressed} onClick={onClick} title={title}>
     {icon && <Icon icon={icon} size={12} className={Classes.TEXT_MUTED}/>}
@@ -313,6 +319,52 @@ const Folders = ({ folder, folders, setFilters, loading }) => {
   </nav>;
 };
 
+// Annotations: the groups (with how many inputs have annotations in each), their labels, and "with annotations"
+const MAX_LABELS = 30;
+const AnnotationFacets = ({ filters, setFilters, groups, labels }) => {
+  const active = !!(filters.annotation_group || filters.label || filters.annotated);
+  if (!active && groups.length === 0 && labels.length === 0) return null;
+  const group_listed = groups.some(g => String(g.id) === filters.annotation_group);
+  const label_listed = labels.some(l => l.label === filters.label);
+  return <section aria-label="Annotations" className="qa-annotation-facet">
+    <h2 className={`qa-facet-title ${Classes.TEXT_MUTED}`}>Annotations</h2>
+    <ul className="qa-facet-list">
+      <FacetRow
+        icon="draw"
+        name="With annotations"
+        pressed={filters.annotated}
+        title="Inputs with annotations in the groups shown"
+        onClick={() => setFilters({ annotated: filters.annotated ? '' : '1' })}
+      />
+      {groups.map(g => <FacetRow
+        key={g.id}
+        icon="folder-close"
+        name={g.name}
+        title={`Inputs with annotations in ${g.name}`}
+        count={g.count}
+        pressed={filters.annotation_group === String(g.id)}
+        onClick={() => setFilters({ annotation_group: filters.annotation_group === String(g.id) ? '' : String(g.id) })}
+      />)}
+      {filters.annotation_group && !group_listed && <FacetRow icon="folder-close" name={`Group #${filters.annotation_group}`} pressed onClick={() => setFilters({ annotation_group: '' })}/>}
+    </ul>
+    {(labels.length > 0 || filters.label) && <>
+      <h3 className={`qa-facet-title ${Classes.TEXT_MUTED}`} style={{ marginTop: 8, fontSize: 11 }}>Labels</h3>
+      <ul className="qa-facet-list" aria-label="Labels">
+        {labels.slice(0, MAX_LABELS).map(l => <FacetRow
+          key={l.label}
+          icon="tag"
+          name={l.label}
+          title={`Inputs with an annotation labelled ${l.label}`}
+          count={l.count}
+          pressed={filters.label === l.label}
+          onClick={() => setFilters({ label: filters.label === l.label ? '' : l.label })}
+        />)}
+        {filters.label && !label_listed && <FacetRow icon="tag" name={filters.label} pressed onClick={() => setFilters({ label: '' })}/>}
+      </ul>
+    </>}
+  </section>;
+};
+
 // The input to show in the viewer when it's not in the list (e.g. a shared link with other filters)
 const useViewed = (project, id, items) => {
   const index = id === null ? -1 : items.findIndex(i => String(i.id) === String(id));
@@ -328,7 +380,7 @@ const InputsPage = () => {
   const filters = inputs_filters_from_query(query);
   const setFilters = (changes, { replace = false } = {}) => updateSelected(changes, {
     replace,
-    defaults: { ...inputs_defaults, live: '1', input: '' },
+    defaults: { ...inputs_defaults, live: '1', input: '', annotated: '' },
   });
   // the switch: live=0 when off
   const setLive = live => setFilters({ live: live ? '1' : '0' });
@@ -348,6 +400,9 @@ const InputsPage = () => {
   const { first, count, items, item_at, loadMore, isPending, error, refetch } = paged;
   const databases = first?.databases ?? [];
   const folders = first?.folders ?? [];
+  const annotation_groups = first?.annotation_groups ?? [];
+  const labels = first?.labels ?? [];
+  const annotation_group_name = annotation_groups.find(g => String(g.id) === filters.annotation_group)?.name;
   const collections = useCollections(project);
 
   const [selection, setSelection] = useState(empty_selection);
@@ -359,7 +414,10 @@ const InputsPage = () => {
   const key = filters_key(filters);
   const current_key = useRef(key);
   useEffect(() => { current_key.current = key; }, [key]);
-  const matching_now = { key, filters: { q: filters.q, folder: filters.folder, database: filters.database, live: filters.live } };
+  const matching_now = { key, filters: {
+    q: filters.q, folder: filters.folder, database: filters.database, live: filters.live,
+    annotation_group: filters.annotation_group, annotation_group_name, label: filters.label, annotated: filters.annotated,
+  } };
   const all_loaded = !isPending && count > 0 && items.length >= count;
   // A selection of every input the filters match, whichever way users made it (Ctrl+A when all are loaded): says so
   const changeSelection = next => {
@@ -414,8 +472,8 @@ const InputsPage = () => {
     requestAnimationFrame(() => document.querySelector(`[role="gridcell"][data-index="${items.findIndex(i => String(i.id) === id)}"]`)?.focus());
   };
 
-  const filtered = !!(filters.q || filters.folder || filters.database);
-  const clearFilters = () => setFilters({ q: '', folder: '', database: '' });
+  const filtered = !!(filters.q || filters.folder || filters.database || filters.annotation_group || filters.label || filters.annotated);
+  const clearFilters = () => setFilters({ q: '', folder: '', database: '', annotation_group: '', label: '', annotated: '' });
   const show_guide = !guide_hidden && !collections.isPending && collections.list.length === 0 && count > 0;
 
   return <Page aria-labelledby="inputs-title">
@@ -461,6 +519,7 @@ const InputsPage = () => {
             />)}
           </ul>
         </section>}
+        <AnnotationFacets filters={filters} setFilters={setFilters} groups={annotation_groups} labels={labels}/>
       </aside>
 
       <div className="qa-inputs-main">
@@ -499,6 +558,9 @@ const InputsPage = () => {
             : <span><strong style={{ fontSize: 15 }}>{count.toLocaleString()}</strong> <span className={Classes.TEXT_MUTED}>input{count === 1 ? '' : 's'}{filtered ? ' match' : ''}</span></span>}
           {filters.folder && <Tag minimal icon="folder-close" onRemove={() => setFilters({ folder: '' })} title="Inputs under this folder">{filters.folder}</Tag>}
           {filters.database && <Tag minimal icon="database" onRemove={() => setFilters({ database: '' })} title={filters.database}>{database_label(filters.database)}</Tag>}
+          {filters.annotation_group && <Tag minimal icon="draw" onRemove={() => setFilters({ annotation_group: '' })} title="Inputs with annotations in this group">{annotation_group_name ?? `group #${filters.annotation_group}`}</Tag>}
+          {filters.label && <Tag minimal icon="tag" onRemove={() => setFilters({ label: '' })} title="Inputs with an annotation with this label">{filters.label}</Tag>}
+          {filters.annotated && <Tag minimal icon="draw" onRemove={() => setFilters({ annotated: '' })} title="Inputs with annotations in the groups shown">with annotations</Tag>}
           {count > 0 && <Button variant="minimal" size="small" text={all_loaded ? 'Select all' : 'Select all loaded'} onClick={() => changeSelection({ selected: new Map(items.map(i => [i.id, i])), anchor: null })} title={all_loaded ? `Selects the ${count.toLocaleString()} inputs (Ctrl+A in the grid)` : `Selects the ${items.length.toLocaleString()} inputs loaded so far (Ctrl+A in the grid)`}/>}
           {count > 0 && !all_loaded && !isPending && (too_many
             ? <Tooltip content={`A collection holds at most ${max_collection_inputs.toLocaleString()} inputs: narrow the filters to select every match.`} placement="bottom">
@@ -524,7 +586,7 @@ const InputsPage = () => {
           ? <NonIdealState
               icon="search"
               title="No inputs match"
-              description={<>No input {filters.q ? <>matches “{filters.q}”</> : 'is there'}{filters.folder ? <> under <code>{filters.folder}</code></> : ''}{filters.database ? <> in {database_label(filters.database)}</> : ''}{filters.live ? ', among those with runs left' : ''}.</>}
+              description={<>No input {filters.q ? <>matches “{filters.q}”</> : 'is there'}{filters.folder ? <> under <code>{filters.folder}</code></> : ''}{filters.database ? <> in {database_label(filters.database)}</> : ''}{filters.annotation_group || filters.label || filters.annotated ? <> with {filters.label ? <>an annotation labelled “{filters.label}”</> : 'annotations'}{filters.annotation_group ? <> in {annotation_group_name ?? 'this group'}</> : ''}</> : ''}{filters.live ? ', among those with runs left' : ''}.</>}
               action={<div style={{ display: 'flex', gap: 8 }}>
                 <Button icon="filter-remove" text="Clear the filters" onClick={clearFilters}/>
                 {filters.live && <Button text="Show inputs whose runs were deleted" onClick={() => setLive(false)}/>}
@@ -554,6 +616,7 @@ const InputsPage = () => {
               selection={selection}
               onSelectionChange={changeSelection}
               onOpen={openViewer}
+              badge={annotations_badge}
             />
           </>}
 

@@ -745,6 +745,8 @@ export const SHORTCUTS = [
   ['[ ]', 'Previous / next region of interest'],
   ['o', 'Show / hide the outlines of the regions on the images'],
   ['f', 'Full screen, Esc or f again to leave'],
+  ['r', 'With editable regions: draw a rectangle, drag on the image. Esc stops'],
+  ['← ↑ → ↓', 'With an editable region selected (click it): move it by a pixel, Shift+arrows by 10. Delete deletes it, Esc unselects it'],
 ];
 
 export const Shortcuts = () => <table className="qiv-shortcuts">

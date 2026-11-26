@@ -11,7 +11,8 @@ import { path_segment, stringify_query } from "../selection";
 // -- Inputs
 
 // What the Inputs page asks for, from its URL: ?q=&folder=&database=&live=0&sort=path
-export const inputs_defaults = { q: '', folder: '', database: '', live: true, sort: 'last_run' };
+// and by annotations (docs/design/annotations.md): &annotation_group=<id>&label=<label>&annotated=1
+export const inputs_defaults = { q: '', folder: '', database: '', live: true, sort: 'last_run', annotation_group: '', label: '', annotated: false };
 export const inputs_sorts = [
   { value: 'last_run', label: 'Last used', title: 'The inputs runs used most recently first' },
   { value: 'path', label: 'Path', title: 'In alphabetical order of their path' },
@@ -24,22 +25,29 @@ export const inputs_filters_from_query = query => ({
   database: text(query.database),
   live: query.live !== '0' && query.live !== 'false',
   sort: inputs_sorts.some(s => s.value === query.sort) ? query.sort : inputs_defaults.sort,
+  annotation_group: /^\d+$/.test(text(query.annotation_group)) ? text(query.annotation_group) : '',
+  label: text(query.label),
+  annotated: query.annotated === '1' || query.annotated === 'true',
 });
 
 // Pages of inputs: the grid loads them as users scroll
 export const inputs_page_size = 200;
 
 // The parameters of GET /inputs: only those that aren't the defaults, so that equal filters share their cache
-export const inputs_params = (project, { q, folder, database, live, sort } = {}) => ({
+export const inputs_params = (project, { q, folder, database, live, sort, annotation_group, label, annotated } = {}) => ({
   project,
   q: q?.trim() || undefined,
   folder: folder || undefined,
   database: database || undefined,
   live: live === false ? 0 : 1,
   sort: sort || inputs_defaults.sort,
+  annotation_group: annotation_group || undefined,
+  label: label || undefined,
+  annotated: annotated ? 1 : undefined,
 });
 
-// {inputs: [Input], total, databases: [{database, count}], folders: [{folder, count}]}, by pages.
+// {inputs: [Input], total, databases: [{database, count}], folders: [{folder, count}], annotation_groups: [{id, name, count}],
+// labels: [{label, count}]}, by pages. Each Input has `annotations`: how many it has in the groups shown.
 // The server counts total, databases and folders for the first page only (null or missing on the next ones): read them on pages[0].
 export const inputs_total = pages => pages?.[0]?.total ?? null;
 export const inputs_next_offset = (last, pages) => {
@@ -75,10 +83,14 @@ export const fetchMatchingIds = async (project, filters, { signal } = {}) => {
 export const filters_key = filters => JSON.stringify({ ...inputs_params('', filters), project: undefined, sort: undefined });
 
 // The filters in words: ['search "night"', 'folder night/street', 'hiding inputs whose runs were deleted']
-export const describe_filters = ({ q, folder, database, live } = {}) => [
+// `annotation_group_name`: the name of the group filtered by, when known
+export const describe_filters = ({ q, folder, database, live, annotation_group, annotation_group_name, label, annotated } = {}) => [
   q?.trim() && `search "${q.trim()}"`,
   folder && `folder ${folder}`,
   database && `database ${database}`,
+  annotation_group && `annotation group ${annotation_group_name || `#${annotation_group}`}`,
+  label && `label "${label}"`,
+  annotated && !annotation_group && !label && 'with annotations',
   live !== false && 'hiding inputs whose runs were deleted',
 ].filter(Boolean);
 

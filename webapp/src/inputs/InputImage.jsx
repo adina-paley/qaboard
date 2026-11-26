@@ -4,7 +4,8 @@ import { usePrefsStore } from '../stores/prefs';
 import '../viewers/images/image-viewer-theme.css';
 
 
-const InputImage = ({ image, notice, syncKey }) => {
+// editing: the props of the viewer's editable regions (useAnnotationEditor's `viewer`)
+const InputImage = ({ image, notice, syncKey, editing }) => {
   const pixel_values = usePrefsStore(state => state.imagePixelValues);
   const setPixelValues = usePrefsStore(state => state.setImagePixelValues);
   return <ImageViewer
@@ -19,6 +20,7 @@ const InputImage = ({ image, notice, syncKey }) => {
     theme="dark"
     maxHeight={height => height - 190}
     notice={notice}
+    {...editing}
   />;
 };
 

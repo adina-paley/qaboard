@@ -335,7 +335,7 @@ export const InputGrid = ({
           data-index={index}
           aria-colindex={column + 1}
           aria-selected={selectable ? is_selected : undefined}
-          aria-label={`${name}${is_removed ? ', removed' : ''}`}
+          aria-label={`${name}${is_removed ? ', removed' : ''}${input.annotations > 0 ? `, ${input.annotations} annotation${input.annotations === 1 ? '' : 's'}` : ''}`}
           tabIndex={index === focus_index ? 0 : -1}
           className={`qa-input-tile${is_removed ? ' qa-removed' : ''}`}
           title={input.path}

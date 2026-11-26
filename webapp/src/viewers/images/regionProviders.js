@@ -39,6 +39,7 @@ import { colorAt } from '../../image-viewer/colormaps';
 import { run_view } from '../runView';
 import { LABEL_COLORS, colorIndex } from '../media/media';
 import { resetAfterEachTest } from '../../testState';
+import { inputs_path } from '../../inputs/api';
 
 
 // The presets of the input (in its metadata), and of the configurations: `roi`, or `view.images.roi` (../runView.js)
@@ -138,6 +139,74 @@ const autoRegions = (diff_type, label, description) => ({
   },
 });
 
+// QA-Board's own annotations of the run's input (docs/design/annotations.md): the groups seen from the project,
+// read-only here (they're drawn and edited in the Inputs viewer: each region links there). On the run's input and its
+// outputs: they're in the input's pixels, scaled to the images shown. Runs say their input's id (`test_input_id`).
+export const QABOARD_ANNOTATIONS = 'qaboard';
+const qaboard_annotations = {
+  id: 'annotations-qaboard',
+  source: QABOARD_ANNOTATIONS,
+  label: 'QA-Board annotations',
+  group_noun: 'group',
+  description: "The annotations of the run's input in QA-Board's groups. Draw and edit them in the Inputs page's viewer",
+  section: 'Annotations',
+  noun: 'annotations',
+  auto: true,
+  overview: true,
+  staleTime: 60 * 1000,
+  empty: 'No QA-Board annotations of this input',
+  // older servers don't say the input's id: no set
+  available: ({ output_new }) => !output_new.deleted && output_new.test_input_id !== undefined && output_new.test_input_id !== null,
+  key: ({ output_new, project }) => [output_new.test_input_id, project ?? null],
+  find: async ({ output_new, project }, { signal }) => {
+    const input_id = output_new.test_input_id;
+    try {
+      const { data } = await http.get(`/api/v1/inputs/${input_id}/annotations`, { params: { project: project ?? undefined }, signal });
+      return qaboardAnnotationsToRegions(data, { project, input_id, metadata: output_new.test_input_metadata });
+    } catch (error) {
+      // a server without annotations, or the input isn't seen from this project: none
+      if (error?.response?.status === 404) return { groups: [], regions: [] };
+      throw error;
+    }
+  },
+};
+
+// {annotations, groups} (GET /inputs/<id>/annotations) as {groups, regions}: the groups with annotations of the input,
+// shown unless users hid them (in the Inputs viewer too), each region linking to the input in the Inputs page
+export const qaboardAnnotationsToRegions = ({ annotations = [], groups = [] } = {}, { project, input_id, metadata } = {}) => {
+  const counts = {};
+  for (const a of annotations) counts[a.group] = (counts[a.group] ?? 0) + 1;
+  const annotated = groups.filter(group => counts[group.id] > 0);
+  const colors = groupColors(annotated);
+  const href = project && input_id !== undefined && input_id !== null ? inputs_path(project, { input: input_id }) : undefined;
+  const by_id = Object.fromEntries(annotated.map(group => [group.id, group]));
+  return {
+    groups: annotated.map(group => ({
+      id: group.id,
+      label: group.name,
+      detail: group.team?.name ?? (group.personal ? 'personal' : group.inherited ? group.project : undefined),
+      count: counts[group.id],
+      color: colors[group.id],
+      shown: true,
+      url: href,
+    })),
+    regions: annotations.filter(a => by_id[a.group]).map(a => ({
+      id: a.id,
+      group: a.group,
+      x: a.x, y: a.y, w: a.w, h: a.h,
+      imageWidth: a.image_width ?? metadata?.width ?? undefined,
+      imageHeight: a.image_height ?? metadata?.height ?? undefined,
+      label: (a.labels ?? []).join(', ') || by_id[a.group].name,
+      tags: a.labels?.length ? a.labels : undefined,
+      fields: a.fields && Object.keys(a.fields).length ? a.fields : undefined,
+      color: colors[a.group],
+      detail: by_id[a.group].name,
+      href,
+      hrefLabel: href ? 'Edit in Inputs' : undefined,
+    })),
+  };
+};
+
 const providers = [
   logged,
   logged_ref,
@@ -145,6 +214,7 @@ const providers = [
   autoRegions('yiq', 'Where they differ: perceptual', 'The server compares the full images by perceived color difference (YIQ, like the viewer\'s), pixel by pixel, and finds where they differ most'),
   autoRegions('ssim', 'Where they differ: structure (SSIM)', 'The server compares the full images by structural similarity (SSIM), about 1000 pixels wide, and finds where they differ most'),
   autoRegions('ciede2000', 'Where they differ: ΔE 2000', 'The server compares the full images by CIEDE2000 color difference, about 1000 pixels wide, and finds where they differ most'),
+  qaboard_annotations,
 ];
 
 
@@ -220,8 +290,8 @@ export const annotationsToRegions = ({ groups = [], annotations = [] }, source_l
   };
 };
 
-// The groups users see: what they picked, else theirs
-export const isGroupShown = (group, choices) => choices?.[group.id] ?? !!group.mine;
+// The groups users see: what they picked, else those shown by default (QA-Board's), else theirs
+export const isGroupShown = (group, choices) => choices?.[group.id] ?? group.shown ?? !!group.mine;
 
 export const registerRegionProvider = provider => {
   const index = providers.findIndex(p => p.id === provider.id);

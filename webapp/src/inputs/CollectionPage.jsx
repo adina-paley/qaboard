@@ -28,7 +28,8 @@ import { collections_icon } from "./icons";
 import { usePagedInputs } from "./usePaged";
 import { InputGrid } from "./InputGrid";
 import { InputViewer } from "./InputViewer";
-import { Page } from "./InputsPage";
+import { Page, annotations_badge } from "./InputsPage";
+import { describe_source, source_details } from "./annotations";
 import { empty_selection } from "./gridSelection";
 
 
@@ -168,6 +169,27 @@ const Code = ({ code, what, label }) => <div className="qa-code">
     <Button icon="duplicate" aria-label={`Copy ${what}`} onClick={() => copyWithToast(code, { what })}/>
   </Tooltip>
 </div>;
+
+// Versions saved from code (qaboard.collections.save, qa collections save) say where they came from: the script, its
+// commit, the host. On hover (or focus): the command line, the folder, the repository.
+export const SavedFrom = ({ source }) => {
+  const text = describe_source(source);
+  if (!text) return null;
+  const details = source_details(source);
+  return <Tooltip
+    placement="bottom-start"
+    content={<dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', gap: '2px 10px', maxWidth: 520 }}>
+      {details.map(([term, value]) => <Fragment key={term}><dt style={{ opacity: 0.75 }}>{term}</dt><dd style={{ margin: 0, fontFamily: 'var(--qa-font-mono, monospace)', overflowWrap: 'anywhere' }}>{value}</dd></Fragment>)}
+    </dl>}
+    disabled={details.length === 0}
+  >
+    {/* focusable: the details show with the keyboard too */}
+    {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+    <span tabIndex={0} className="qa-saved-from" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help' }} aria-label={[text, ...details.map(([t, v]) => `${t}: ${v}`)].join('. ')}>
+      <Icon icon="code" size={12}/> {text}
+    </span>
+  </Tooltip>;
+};
 
 // Which version code uses: the one shown (pinned: always the same inputs) or the latest when it runs
 const RefChoice = ({ collection, version, value, onChange }) => <SegmentedControl
@@ -359,7 +381,7 @@ const CollectionPage = () => {
               icon={v.version === version ? 'tick' : 'blank'}
               text={<>@{v.version}{v.version === latest && <span className={Classes.TEXT_MUTED}> · latest</span>}</>}
               label={`${plural(v.size, 'input')} · ${relative(v.created_at)}`}
-              title={[v.notes, creator_name(v) && `by ${creator_name(v)}`].filter(Boolean).join('\n')}
+              title={[v.notes, creator_name(v) && `by ${creator_name(v)}`, describe_source(v.source)].filter(Boolean).join('\n')}
               onClick={() => set({ version: v.version === latest ? '' : String(v.version), input: '' })}
             />)}
           </Menu>}>
@@ -375,6 +397,7 @@ const CollectionPage = () => {
             {is_latest && versions.length > 1 ? 'Saved' : 'Created'} by <strong>{creator_name(shown_version) ?? creator_name(collection) ?? 'someone'}</strong> {relative(shown_version.created_at ?? collection.created_at)}
           </span>
           {is_other_project && <span>· from the parent project <strong>{collection.project}</strong></span>}
+          {shown_version.source && <SavedFrom source={shown_version.source}/>}
         </div>
         {!!collection.description && <p style={{ margin: '8px 0 0', maxWidth: 760, whiteSpace: 'pre-wrap' }}>{collection.description}</p>}
       </div>
@@ -466,6 +489,7 @@ const CollectionPage = () => {
                   onSelectionChange={setSelection}
                   onOpen={openViewer}
                   removed={removed}
+                  badge={annotations_badge}
                 />}
         </>}
 

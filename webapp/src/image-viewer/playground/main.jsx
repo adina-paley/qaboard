@@ -2,7 +2,7 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { ImageViewer } from '../index';
+import { centeredRect, ImageViewer } from '../index';
 
 // A test chart: gradients, color patches, fine lines and text. The reference differs in a few places.
 const draw = (canvas, reference) => {
@@ -157,6 +157,62 @@ const Many = ({ a, b }) => {
   />;
 };
 
+// Editable regions: draw (r), select, move, resize, nudge with the arrows, delete. Some are in the pixels of an image
+// twice as large (like annotations of a full-size input shown downscaled), one is read-only.
+const EDIT_COLORS = ['#e5484d', '#30a46c', '#3e63dd', '#f76b15', '#8e4ec6'];
+const Editable = ({ image, theme }) => {
+  const [regions, setRegions] = useState([
+    { id: 1, x: 0, y: 213, w: 120, h: 107, label: 'Red patch', color: EDIT_COLORS[0] },
+    { id: 2, x: 1040, y: 960, w: 800, h: 280, label: 'Text (of a 1920×1280 image)', color: EDIT_COLORS[1], imageWidth: 1920, imageHeight: 1280 },
+    { id: 3, x: 300, y: 60, w: 220, h: 120, label: 'Read-only', color: EDIT_COLORS[2], readOnly: true },
+  ]);
+  const [selected, setSelected] = useState(null);
+  const [drawing, setDrawing] = useState(false);
+  const [size, setSize] = useState(null);
+  const [log, setLog] = useState([]);
+  const say = text => setLog(lines => [text, ...lines].slice(0, 6));
+  const next_id = () => Math.max(0, ...regions.map(r => r.id)) + 1;
+  const add = rect => {
+    const id = next_id();
+    setRegions(rs => [...rs, { id, ...rect, label: `#${id}`, color: EDIT_COLORS[id % EDIT_COLORS.length] }]);
+    setSelected(id);
+    say(`created #${id}: ${JSON.stringify(rect)}`);
+  };
+  const region = regions.find(r => r.id === selected);
+  const color = theme === 'dark' ? '#fff' : '#000';
+  return <>
+    <h4 style={{ color }}>Editable regions: r draws, click selects, drag moves, handles resize, arrows nudge, Delete deletes</h4>
+    <p style={{ color }}>
+      <button onClick={() => setDrawing(!drawing)} aria-pressed={drawing}>{drawing ? 'Drawing…' : 'Draw (r)'}</button>{' '}
+      <button disabled={!size} onClick={() => add({ ...centeredRect(size), imageWidth: size.width, imageHeight: size.height })}>Add rectangle</button>{' '}
+      {region && <span>Selected <b>{region.label}</b>: {region.x}, {region.y}, {region.w}×{region.h}{region.imageWidth ? ` (of ${region.imageWidth}×${region.imageHeight})` : ''}</span>}
+    </p>
+    <ImageViewer
+      className="playground-editable"
+      image={{ url: image, label: 'chart' }}
+      editableRegions={regions}
+      selectedRegion={selected}
+      onRegionSelect={setSelected}
+      drawing={drawing}
+      onDrawingChange={setDrawing}
+      onRegionCreate={add}
+      onRegionChange={(id, rect, { reason }) => {
+        setRegions(rs => rs.map(r => r.id === id ? { ...r, ...rect } : r));
+        say(`${reason} #${id}: ${JSON.stringify(rect)}`);
+      }}
+      onRegionDelete={id => {
+        setRegions(rs => rs.filter(r => r.id !== id));
+        setSelected(null);
+        say(`deleted #${id}`);
+      }}
+      onImageSize={setSize}
+      theme={theme}
+      style={{ maxWidth: 1000 }}
+    />
+    <pre style={{ color, fontSize: 12 }}>{log.join('\n')}</pre>
+  </>;
+};
+
 const App = () => {
   const [images, setImages] = useState(null);
   const [mode, setMode] = useState('side-by-side');
@@ -188,6 +244,8 @@ const App = () => {
   }, []);
   if (!images) return null;
   if (MANY > 2) return <div style={{ padding: 16, fontFamily: 'system-ui, sans-serif' }}><Many a={images.a} b={images.b} /></div>;
+  // ?edit: the editable regions alone
+  if (PARAMS.has('edit')) return <div style={{ padding: 16, fontFamily: 'system-ui, sans-serif' }}><Editable image={images.a} theme={theme} /></div>;
   const regions = [{ id: 'presets', label: 'Presets', regions: [
     { x: 0, y: 213, w: 120, h: 107, label: 'Red patch' },
     { x: 0, y: 427, w: 80, h: 60, label: 'Lines' },
@@ -237,6 +295,7 @@ const App = () => {
     />
     <h4 style={{ color: theme === 'dark' ? '#fff' : '#000' }}>Synced with the viewer above</h4>
     <ImageViewer image={images.b} syncKey="chart" theme={theme} style={{ maxWidth: 600 }} />
+    <Editable image={images.a} theme={theme} />
   </div>;
 };
 
