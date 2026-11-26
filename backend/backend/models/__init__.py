@@ -21,3 +21,4 @@ from .ProjectView import *
 from .UsageEvent import *
 from .StorageLocation import *
 from .Collection import *
+from .Annotation import *

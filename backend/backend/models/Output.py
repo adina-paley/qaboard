@@ -74,7 +74,7 @@ def is_normalized_path(location: str) -> bool:
 def serialize_output(columns, test_input, batch_dir):
   """
   A run as the API sends it.
-  `columns`: its READ_COLUMNS (a dict), `test_input`: its input_info(), `batch_dir`: its batch's folder
+  `columns`: its READ_COLUMNS and test_input_id (a dict), `test_input`: its input_info(), `batch_dir`: its batch's folder
   (only used without output_dir_override).
   """
   output_dir_override = columns['output_dir_override']
@@ -89,6 +89,8 @@ def serialize_output(columns, test_input, batch_dir):
   test_input_database, test_input_path, test_input_metadata = test_input
   return {
     **{c: columns[c] for c in SERIALIZED_COLUMNS},
+    # the input's id: the web app asks for its annotations (GET /inputs/<id>/annotations) and opens it in the Inputs page
+    'test_input_id': columns.get('test_input_id'),
     'created_date': columns['created_date'].isoformat(),
     'queued_at': iso_utc(columns['queued_at']),
     'started_at': iso_utc(columns['started_at']),
@@ -280,7 +282,9 @@ class Output(Base):
     if batch_dir is None and self.output_dir_override is None:
       batch_dir = self.batch.batch_dir
     test_input = self.test_input
-    return serialize_output({c: getattr(self, c) for c in READ_COLUMNS}, input_info(test_input.database, test_input.path, test_input.data), batch_dir)
+    columns = {c: getattr(self, c) for c in READ_COLUMNS}
+    columns['test_input_id'] = self.test_input_id
+    return serialize_output(columns, input_info(test_input.database, test_input.path, test_input.data), batch_dir)
 
   @staticmethod
   def get_or_create(session, **kwargs):

@@ -10,7 +10,7 @@ from .test_ingest import PROJECT, SHA, send
 OUTPUT_KEYS = {
   'id', 'output_type', 'platform', 'configurations', 'extra_parameters', 'metrics', 'is_failed', 'is_pending',
   'is_running', 'data', 'deleted', 'created_date', 'queued_at', 'started_at', 'finished_at', 'output_dir_url',
-  'test_input_database', 'test_input_path', 'test_input_metadata',
+  'test_input_id', 'test_input_database', 'test_input_path', 'test_input_metadata',
 }
 
 

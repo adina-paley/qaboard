@@ -18,6 +18,8 @@ PERMISSIONS = {
   'milestones.write': ('developer', 'act'),
   # create collections of inputs, save their versions, rename, archive, pin them for a group
   'collections.write': ('developer', 'act'),
+  # create annotation groups of the project, edit the annotations of its groups without a team
+  'annotations.write': ('developer', 'act'),
   # who ran, deleted or changed what in the project (api/audit_log.py)
   'project.history': ('developer', 'read'),
   # visibility, members, access requests

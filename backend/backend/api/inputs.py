@@ -3,6 +3,7 @@ The inputs of a project, that runs used or that were added before any run, for a
 The rules are in backend/input_collections.py, the SQL in backend/input_catalog.py, thumbnails in backend/thumbnails.py.
 
 GET /api/v1/inputs?project=&q=&folder=&database=&live=1&sort=last_run|path&limit=100&offset=0&facets=
+                  &annotation_group=&label=&annotated=1     filters by annotations (docs/design/annotations.md)
 GET /api/v1/inputs?...&fields=id         only the ids of every input that matches (up to MAX_INPUTS), for "Select all matching"
 POST /api/v1/inputs {project, inputs: [{database, path, metadata?}]}   adds inputs before any run (`qa inputs add`)
 GET /api/v1/inputs/<id>?project=         an input, with the project's latest runs on it, and its sidecar files
@@ -21,6 +22,8 @@ from qaboard.api import dir_to_url
 
 from backend import app, db_session
 from .. import input_catalog as catalog
+from .. import annotation_catalog
+from ..input_annotations import clean_id, clean_label_filter, is_visible_to
 from ..input_collections import (
   CollectionError, clean_project, search_tokens, normalize_folder, clean_page, clean_sort, flag, thumbnail_size,
   serialize_input, input_file, iso, clean_new_inputs, MAX_INPUTS,
@@ -56,10 +59,37 @@ def readable_scope(project_id: str) -> List[str]:
   return [p for p in catalog.scope_projects(project_id) if p == project_id or can('project.read', p)]
 
 
+def shown_annotation_groups(project_id: str, user_id: Optional[int], selected: Optional[int] = None) -> Optional[List[dict]]:
+  """
+  The annotation groups whose annotations the Inputs page counts and filters by: those the user sees from the project
+  (its and its ancestors', not archived, personal ones their creator's), and the group `selected` by a filter, even
+  archived. None if `selected` isn't one the user sees from the project.
+  """
+  groups = annotation_catalog.groups_of(prefixes(project_id), user_id)
+  if selected is not None and selected not in {g['id'] for g in groups}:
+    group = annotation_catalog.group_by_id(selected)
+    if group is None or group['project_id'] not in prefixes(project_id) or not is_visible_to(group, user_id):
+      return None
+    groups = [*groups, group]
+  return groups
+
+
+def with_annotation_counts(inputs: List[dict], group_ids: List[int]) -> List[dict]:
+  """Adds `annotations` to each Input: how many it has in the groups, counted for the page in one query"""
+  counts = annotation_catalog.annotation_counts([i['id'] for i in inputs], group_ids)
+  for i in inputs:
+    i['annotations'] = counts.get(i['id'], 0)
+  return inputs
+
+
 @app.route("/api/v1/inputs", methods=['GET'])
 @app.route("/api/v1/inputs/", methods=['GET'])
 def list_inputs():
-  """{inputs, total, databases, folders, limit, offset}, see input_catalog.list_inputs: the facets are null after the first page, unless facets=1"""
+  """
+  {inputs, total, databases, folders, annotation_groups, labels, limit, offset}, see input_catalog.list_inputs: the
+  facets are null after the first page, unless facets=1. Each Input has `annotations`: how many it has in the
+  annotation groups shown (the one filtered by, else those the user sees from the project).
+  """
   try:
     project_id = clean_project(request.args.get('project'))
     database = request.args.get('database') or None
@@ -70,6 +100,9 @@ def list_inputs():
       folder=normalize_folder(request.args.get('folder')),
       database=database,
       live=flag(request.args.get('live'), True),
+      annotation_group=clean_id(request.args.get('annotation_group'), 'annotation_group') if request.args.get('annotation_group') else None,
+      label=clean_label_filter(request.args.get('label')),
+      annotated=flag(request.args.get('annotated'), False),
     )
     sort = clean_sort(request.args.get('sort'))
     fields = request.args.get('fields') or None
@@ -82,12 +115,23 @@ def list_inputs():
     return error_response(e)
   if forbidden := require_project_access(None, project_id, 'project.read'):
     return forbidden
+  _, user_id = current_user_info()
+  groups = shown_annotation_groups(project_id, user_id, filters.annotation_group)
+  if groups is None:
+    return jsonify({"error": f"No annotation group {filters.annotation_group} in {project_id}.", "reason": "annotation_group_not_found"}), 404
+  filters.annotation_groups = [g['id'] for g in groups]
   if fields == 'id':
     # Every match, not a page: as many as a collection's version can have. More: the web app asks to narrow the filters.
     found = catalog.list_input_ids(readable_scope(project_id), filters, sort, cap=MAX_INPUTS)
     return jsonify({**found, "max": MAX_INPUTS})
   found = catalog.list_inputs(readable_scope(project_id), filters, sort, limit, offset, with_facets=with_facets)
-  return jsonify({**found, "inputs": [serialize_input(row) for row in found['inputs']], "limit": limit, "offset": offset})
+  if found.get('annotation_groups') is not None:
+    names = {g['id']: g['name'] for g in groups}
+    found['annotation_groups'] = sorted(
+      ({"id": g['id'], "name": names.get(g['id']), "count": g['count']} for g in found['annotation_groups'] if g['id'] in names),
+      key=lambda g: (g['name'] or '', g['id']))
+  inputs = with_annotation_counts([serialize_input(row) for row in found['inputs']], filters.counted_groups())
+  return jsonify({**found, "inputs": inputs, "limit": limit, "offset": offset})
 
 
 @app.route("/api/v1/inputs", methods=['POST'])

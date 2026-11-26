@@ -205,8 +205,11 @@ class TestAnswers:
 
   def test_version(self):
     assert serialize_version({'version': 2, 'created_at': DATE, 'notes': None, 'size': 4, 'created_by_id': None}) == {
-      'version': 2, 'created_by': None, 'created_at': "2026-11-20T10:30:00Z", 'notes': '', 'size': 4,
+      'version': 2, 'created_by': None, 'created_at': "2026-11-20T10:30:00Z", 'notes': '', 'size': 4, 'source': None,
     }
+    # saved from code: where from
+    source = {'script': 'tools/triage.py', 'git': {'commit': 'a1b2c3d'}}
+    assert serialize_version({'version': 2, 'created_at': DATE, 'size': 4, 'source': source})['source'] == source
 
   def test_stale(self):
     assert stale_error(1, 3)['reason'] == 'stale_version' and stale_error(1, 3)['latest_version'] == 3

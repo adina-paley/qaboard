@@ -3,7 +3,7 @@ Inputs and collections (docs/design/inputs-and-collections.md).
 
 - input_projects: which projects used which input. The Inputs tab reads only this table; it is upserted when runs
   are created (api/outputs.py, backend/input_catalog.py:record_run).
-- collections: named lists of inputs of a project, versioned. Versions never change once written. Collections are
+- collections: named lists of inputs of a project, versioned (saved from the web app, or from code: their `source`). Versions never change once written. Collections are
   archived, never deleted. Subprojects see their ancestors' collections.
 
 The API reads and writes them with SQL (backend/input_catalog.py). The migration b8d0f2a4c6e1 creates them: keep both
@@ -65,6 +65,9 @@ class CollectionVersion(Base):
   created_at = Column(DateTime, nullable=False, default=clock.utcnow)
   notes = Column(Text(), nullable=False, default='', server_default='')
   size = Column(Integer, nullable=False, default=0, server_default='0')
+  # where a version saved from code came from (POST /collections/save): {script, argv, host, cwd, git: {repository,
+  # commit, dirty}}. Added by the migration f3a5c7e9b1d2.
+  source = Column(JSONB(), nullable=True)
 
   __table_args__ = (
     UniqueConstraint('collection_id', 'version', name='uq_collection_versions_collection_id_version'),

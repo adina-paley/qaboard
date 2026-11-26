@@ -69,10 +69,15 @@ def apis(monkeypatch):
   for name in ('scope_projects', 'project_exists', 'list_inputs', 'list_input_ids', 'input_by_id', 'input_in_scope', 'input_stats', 'in_collections_of',
                'input_runs', 'inputs_outside', 'collections_of', 'collection_by_id', 'find_collection', 'name_taken',
                'create_collection', 'add_version', 'update_collection', 'versions_of', 'version_of', 'members', 'member_ids',
-               'member_refs', 'favorite_ids', 'set_favorite', 'pins_of', 'set_pin', 'group_ids_of', 'groups_of', 'group_exists', 'add_inputs', 'clear_pins'):
+               'member_refs', 'favorite_ids', 'set_favorite', 'pins_of', 'set_pin', 'group_ids_of', 'groups_of', 'group_exists', 'add_inputs', 'clear_pins',
+               'known_inputs'):
     mock = MagicMock(name=name)
     monkeypatch.setattr(catalog, name, mock)
     setattr(fake, name, mock)
+  # annotations: none (tests/test_annotations_api.py)
+  from backend import annotation_catalog
+  monkeypatch.setattr(annotation_catalog, 'groups_of', MagicMock(return_value=[]))
+  monkeypatch.setattr(annotation_catalog, 'annotation_counts', MagicMock(return_value={}))
   fake.scope_projects.side_effect = lambda project: [project, f"{project}/b", f"{project}/secret"]
   fake.favorite_ids.return_value = set()
   fake.pins_of.return_value = {}
@@ -453,6 +458,87 @@ def test_create_checks(apis, dummy_app):
   assert create({'project': 'a', 'name': 'x', 'inputs': []}).status_code == 401
 
 
+# ==========================================
+# Collections saved from code (POST /collections/save)
+# ==========================================
+
+SOURCE = {'script': 'tools/triage.py', 'argv': ['--night'], 'host': 'build-1', 'cwd': '/src', 'git': {'repository': 'r', 'commit': 'a1b2c3d', 'dirty': False}}
+
+
+def save_from_code(dummy_app, apis, body):
+  return call(dummy_app, apis.collections.save_collection, url='/api/v1/collections/save', method='POST', json=body)
+
+
+def test_save_creates_a_collection(apis, dummy_app):
+  apis.sql.create_collection.return_value = 3
+  apis.sql.collection_by_id.return_value = collection_row(latest_version=1)
+  apis.sql.add_inputs.return_value = [{'id': 8, 'database': '/d', 'path': 'n/b.raw', 'new': True}, {'id': 9, 'database': '/d', 'path': 'n/c.raw', 'new': False}]
+  apis.sql.known_inputs.return_value = {('/d', 'n/b.raw'): 8, ('/d', 'n/c.raw'): 9}
+  apis.sql.version_of.side_effect = lambda collection_id, version: version_row(version, source=SOURCE)
+  body = {'project': 'a', 'name': ' night / hard ', 'inputs': [5, {'database': '/d/', 'path': '/n/b.raw'}, {'database': '/d', 'path': 'n/c.raw'}, 5, 8],
+          'notes': 'from triage', 'description': 'Hard', 'source': SOURCE}
+  response = save_from_code(dummy_app, apis, body)
+  assert response.status_code == 201, response.get_json()
+  data = response.get_json()
+  assert (data['created'], data['unchanged'], data['added_inputs'], data['version']['source']) == (True, False, 1, SOURCE)
+  # paths like runs send them, added to the project like POST /inputs, in their order without duplicates
+  assert apis.sql.add_inputs.call_args[0] == ('a', [{'database': '/d', 'path': 'n/b.raw', 'metadata': None}, {'database': '/d', 'path': 'n/c.raw', 'metadata': None}])
+  assert apis.sql.create_collection.call_args[0] == ('a', 'night/hard', 'Hard', [5, 8, 9], 'from triage', 2)
+  assert apis.sql.create_collection.call_args[1] == {'shared': True, 'source': SOURCE}
+  assert [args[0] for args, _ in apis.audited] == ['input.add', 'collection.create']
+  apis.db.commit.assert_called_once()
+
+
+def test_save_a_new_version_or_nothing(apis, dummy_app):
+  apis.sql.name_taken.return_value = 3
+  apis.sql.member_refs.return_value = [{'id': 5, 'database': '/d', 'path': 'a'}, {'id': 6, 'database': '/d', 'path': 'b'}]
+  # the same inputs: nothing saved
+  response = save_from_code(dummy_app, apis, {'project': 'a', 'name': 'night/hard', 'inputs': [5, 6], 'source': SOURCE})
+  assert (response.status_code, response.get_json()['unchanged'], response.get_json()['version']['version']) == (200, True, 2)
+  apis.sql.add_version.assert_not_called()
+  assert apis.sql.collection_by_id.call_args_list[0][1] == {'for_update': True}
+  # another order is another version
+  apis.sql.add_version.return_value = 3
+  apis.sql.version_of.side_effect = lambda collection_id, version: version_row(version)
+  response = save_from_code(dummy_app, apis, {'project': 'a', 'name': 'night/hard', 'inputs': [6, 5], 'notes': 'n', 'base_version': 2, 'source': SOURCE})
+  assert (response.status_code, response.get_json()['unchanged'], response.get_json()['created']) == (201, False, False)
+  assert apis.sql.add_version.call_args[0] == (3, 2, [6, 5], 'n', 2) and apis.sql.add_version.call_args[1] == {'source': SOURCE}
+  assert [args[0] for args, _ in apis.audited] == ['collection.version']
+  # the description changes with it
+  save_from_code(dummy_app, apis, {'project': 'a', 'name': 'night/hard', 'inputs': [5, 6], 'description': 'New'})
+  assert apis.sql.update_collection.call_args[0] == (3, {'description': 'New'})
+
+
+def test_save_checks(apis, dummy_app):
+  def save(body):
+    return save_from_code(dummy_app, apis, {'project': 'a', 'name': 'night/hard', 'inputs': [5], **body})
+  apis.sql.name_taken.return_value = 3
+  response = save({'base_version': 1})
+  assert (response.status_code, response.get_json()['reason'], response.get_json()['latest_version']) == (409, 'stale_version', 2)
+  apis.sql.name_taken.return_value = None
+  assert save({'base_version': 1}).status_code == 404
+  for bad in ({'inputs': 'x'}, {'inputs': [True]}, {'inputs': [{'path': 'x'}]}, {'source': 'x'}, {'name': 'a:b'}, {'shared': 'no'}):
+    assert save(bad).status_code == 400, bad
+  assert save({'inputs': list(range(1, 50_002))}).status_code == 413
+  # someone else's personal collection: no id
+  apis.sql.name_taken.return_value = 3
+  apis.sql.collection_by_id.return_value = collection_row(shared=False, created_by_id=1)
+  response = save({})
+  assert response.status_code == 409 and 'id' not in response.get_json()
+  # bob reads a/b: his personal collections there, with inputs a/b knows; he doesn't add others
+  apis.sql.name_taken.return_value = None
+  assert save({'project': 'a/b'}).status_code == 403
+  apis.sql.known_inputs.return_value = {}
+  response = save({'project': 'a/b', 'shared': False, 'inputs': [{'database': '/d', 'path': 'new.raw'}]})
+  assert (response.status_code, response.get_json()['reason']) == (400, 'unknown_inputs')
+  apis.sql.add_inputs.assert_not_called()
+  apis.sql.inputs_outside.return_value = [5]
+  assert save({}).get_json()['reason'] == 'unknown_inputs'
+  apis.sql.create_collection.assert_not_called()
+  apis.user['is_authenticated'] = False
+  assert save({}).status_code == 401
+
+
 def test_read_with_a_version(apis, dummy_app):
   apis.sql.versions_of.return_value = [version_row(2), version_row(1)]
   data = call(dummy_app, apis.collections.read_collection, 3, url='/api/v1/collections/3?version=1').get_json()
@@ -483,6 +569,8 @@ def test_collection_inputs(apis, dummy_app):
   apis.sql.members.return_value = {'inputs': [{'id': 5, 'database': '/d', 'path': 'x.png', 'data': {}, 'runs': 0, 'position': 0}], 'total': 1}
   data = call(dummy_app, apis.collections.collection_inputs, 3, url='/api/v1/collections/3/inputs?project=a/b&q=x&limit=5').get_json()
   assert (data['total'], data['version'], data['limit'], data['inputs'][0]['position']) == (1, 2, 5, 0)
+  # like on the Inputs page: how many annotations each has
+  assert data['inputs'][0]['annotations'] == 0
   assert apis.sql.members.call_args[0] == (12, ['a/b'], ['x'], 5, 0)
 
 

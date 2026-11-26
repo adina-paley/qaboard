@@ -101,6 +101,45 @@ MAX_INPUT_PATH = 2000
 MAX_INPUT_METADATA = 20_000
 
 
+def clean_input_location(item: dict, where: str) -> Tuple[str, str]:
+  """(database, path) of an input given as {database, path}, `path` relative to `database`, normalized like runs send them"""
+  database, path = item.get('database'), item.get('path')
+  if not isinstance(database, str) or not database.strip() or len(database) > MAX_INPUT_PATH:
+    raise CollectionError(f"{where}.database must be the folder the input is in, like runs send it (e.g. /mnt/data)", reason='invalid_inputs')
+  if not isinstance(path, str) or not path.strip() or len(path) > MAX_INPUT_PATH:
+    raise CollectionError(f"{where}.path must be the input's path, relative to its database", reason='invalid_inputs')
+  path = path.strip().replace('\\', '/').lstrip('/')
+  # like runs send it (database.resolve().as_posix()): /mnt//data/ is /mnt/data, not another input
+  # (keeping the // of Windows shares: //server/share)
+  database = database.strip().replace('\\', '/')
+  share = '/' if database.startswith('//') and not database.startswith('///') else ''
+  database = (share + re.sub(r'/+', '/', database)).rstrip('/') or '/'
+  if not path or any(part == '..' for part in path.split('/')):
+    raise CollectionError(f"{where}.path must stay in its database: {item.get('path')!r}", reason='invalid_inputs')
+  return database, path
+
+
+def clean_saved_inputs(value) -> List:
+  """
+  The inputs of a version saved from code (POST /collections/save), in their order, without duplicates: input ids,
+  and (database, path) tuples for those given as {database, path}
+  """
+  if not isinstance(value, list):
+    raise CollectionError("`inputs` must be a list of input ids or {database, path}", reason='invalid_inputs')
+  if len(value) > MAX_INPUTS:
+    raise CollectionError(f"Collections have at most {MAX_INPUTS:,} inputs: this one has {len(value):,}.", status=413, reason='too_many_inputs')
+  inputs, seen = [], set()
+  for index, item in enumerate(value):
+    if isinstance(item, dict):
+      item = clean_input_location(item, f"inputs[{index}]")
+    elif isinstance(item, bool) or not isinstance(item, int) or item <= 0 or item > 2**31 - 1:
+      raise CollectionError(f"inputs[{index}] must be an input id, or {{database, path}}", reason='invalid_inputs')
+    if item not in seen:
+      seen.add(item)
+      inputs.append(item)
+  return inputs
+
+
 def clean_new_inputs(value) -> List[dict]:
   """
   The inputs to add (POST /inputs): [{database, path, metadata?}], without duplicates, in their order.
@@ -116,19 +155,7 @@ def clean_new_inputs(value) -> List[dict]:
     where = f"inputs[{index}]"
     if not isinstance(item, dict):
       raise CollectionError(f"{where} must be {{database, path, metadata?}}", reason='invalid_inputs')
-    database, path = item.get('database'), item.get('path')
-    if not isinstance(database, str) or not database.strip() or len(database) > MAX_INPUT_PATH:
-      raise CollectionError(f"{where}.database must be the folder the input is in, like runs send it (e.g. /mnt/data)", reason='invalid_inputs')
-    if not isinstance(path, str) or not path.strip() or len(path) > MAX_INPUT_PATH:
-      raise CollectionError(f"{where}.path must be the input's path, relative to its database", reason='invalid_inputs')
-    path = path.strip().replace('\\', '/').lstrip('/')
-    # like runs send it (database.resolve().as_posix()): /mnt//data/ is /mnt/data, not another input
-    # (keeping the // of Windows shares: //server/share)
-    database = database.strip().replace('\\', '/')
-    share = '/' if database.startswith('//') and not database.startswith('///') else ''
-    database = (share + re.sub(r'/+', '/', database)).rstrip('/') or '/'
-    if not path or any(part == '..' for part in path.split('/')):
-      raise CollectionError(f"{where}.path must stay in its database: {item.get('path')!r}", reason='invalid_inputs')
+    database, path = clean_input_location(item, where)
     metadata = item.get('metadata')
     if metadata is not None and not isinstance(metadata, dict):
       raise CollectionError(f"{where}.metadata must be a mapping", reason='invalid_inputs')
@@ -389,6 +416,8 @@ def serialize_version(row) -> dict:
     'created_at': iso(row.get('created_at')),
     'notes': row.get('notes') or '',
     'size': int(row.get('size') or 0),
+    # saved from code: {script, argv, host, cwd, git: {repository, commit, dirty}}, else null
+    'source': row.get('source'),
   }
 
 

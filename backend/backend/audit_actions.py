@@ -25,6 +25,7 @@ CATEGORIES = {
   'ci': Category("CI", 'build'),
   'milestones': Category("Milestones", 'flag'),
   'collections': Category("Collections", 'folder-close'),
+  'annotations': Category("Annotations", 'annotation'),
   'projects': Category("Project settings", 'projects'),
   'storage': Category("Storage", 'database'),
   'jobs': Category("Jobs", 'time'),
@@ -119,6 +120,13 @@ ACTIONS = {
   'collection.version': Action("Saved a version of a collection", 'collections', project=True),
   'collection.pin': Action("Pinned a collection", 'collections', project=True),
   'collection.unpin': Action("Unpinned a collection", 'collections', project=True),
+  # Annotations of inputs (api/input_annotations.py): each change also has its history (annotation_changes)
+  'annotation_group.create': Action("Created an annotation group", 'annotations', project=True),
+  'annotation_group.update': Action("Changed an annotation group", 'annotations', project=True),
+  'annotation.create': Action("Added an annotation", 'annotations', project=True),
+  'annotation.update': Action("Changed an annotation", 'annotations', project=True),
+  'annotation.delete': Action("Deleted an annotation", 'annotations', project=True),
+  'annotation.restore': Action("Restored an annotation", 'annotations', project=True),
   # Project settings
   'project_settings.update': Action("Changed the project's settings", 'projects', project=True),
   # Storage

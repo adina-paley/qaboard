@@ -4,6 +4,7 @@ The rules are in backend/input_collections.py, the SQL in backend/input_catalog.
 
 GET          /api/v1/collections?project=&archived=0     the project's and its ancestors'
 POST         /api/v1/collections                          create one, with its version 1
+POST         /api/v1/collections/save                     from code: create one, or save its next version if it changed
 GET          /api/v1/collections/resolve?project=&ref=    for the CLI: night/hard@2 => its inputs
 GET          /api/v1/collections/<id>?version=&project=   one, with a version and the list of versions
 PATCH        /api/v1/collections/<id>                     rename, describe, archive (POST works too)
@@ -28,13 +29,14 @@ from .. import input_catalog as catalog
 from ..input_collections import (
   CollectionError, clean_project, normalize_name, clean_text, clean_input_ids, clean_version, clean_group_id, parse_ref,
   lookup_projects, is_visible_from, ref_of, search_tokens, clean_page, flag, serialize_collection, serialize_version,
-  serialize_input, export_yaml, stale_error, is_shared, is_owner, is_visible_to, MAX_DESCRIPTION, MAX_NOTES,
+  serialize_input, export_yaml, stale_error, is_shared, is_owner, is_visible_to, clean_saved_inputs, MAX_DESCRIPTION, MAX_NOTES,
 )
+from ..input_annotations import clean_source
 from ..access import can
 from ..audit import audit, capped, diff
 from ..access.policy import prefixes
 from .auth import login_required, require_project_access
-from .inputs import error_response, current_user_info, readable_scope
+from .inputs import error_response, current_user_info, readable_scope, shown_annotation_groups, with_annotation_counts
 
 
 def not_found(message="This collection doesn't exist.", reason='collection_not_found'):
@@ -215,6 +217,121 @@ def create_collection():
   return jsonify(answer(row, project_id, user_id)), 201
 
 
+@app.route("/api/v1/collections/save", methods=['POST'])
+@app.route("/api/v1/collections/save/", methods=['POST'])
+@login_required
+def save_collection():
+  """
+  From code (qaboard.collections.save, `qa collections save`): {project, name, inputs: [id or {database, path}],
+  notes?, description?, base_version?, source?, shared?} creates the collection (201, `created`), or saves its next
+  version (201) when its inputs differ from the latest version's, else saves nothing (200, `unchanged`).
+  Inputs given as {database, path} that QA-Board doesn't know are added to the project like POST /inputs (which needs
+  collections.write). `base_version`: 409 `stale_version` if it isn't the latest. `source`: where it came from,
+  {script, argv, host, cwd, git: {repository, commit, dirty}}, kept with the version.
+  => the Collection with its `version`, `created`, `unchanged`, `added_inputs` (inputs new to the project).
+  """
+  _, user_id = current_user_info()
+  if not user_id:
+    return sign_in_error()
+  try:
+    body = json_body()
+    project_id = clean_project(body.get('project'))
+    name = normalize_name(body.get('name'))
+    inputs = clean_saved_inputs(body.get('inputs'))
+    notes = clean_text(body.get('notes'), MAX_NOTES, 'notes')
+    description = clean_text(body.get('description'), MAX_DESCRIPTION, 'description') if body.get('description') is not None else None
+    base_version = clean_version(body.get('base_version'), 'base_version')
+    source = clean_source(body.get('source'))
+    shared = body.get('shared', True)
+    if not isinstance(shared, bool):
+      raise CollectionError("`shared` must be true or false")
+  except CollectionError as e:
+    return error_response(e)
+  if forbidden := require_project_access(None, project_id, 'project.read'):
+    return forbidden
+  if not catalog.project_exists(project_id):
+    return jsonify({"error": f"The project {project_id} doesn't exist.", "reason": "project_not_found"}), 404
+
+  # the collection of this name in the project (not an ancestor's: saving there would surprise its owners)
+  taken = catalog.name_taken(project_id, name)
+  row = catalog.collection_by_id(taken, for_update=True) if taken is not None else None
+  if row is not None and not is_visible_to(row, user_id):
+    return name_taken_response(project_id, name, taken, user_id)
+  if row is None:
+    if base_version is not None:
+      return not_found(f"{project_id} has no collection named {name}: send no base_version to create it.")
+    if forbidden := require_project_access(None, project_id, 'collections.write' if shared else 'project.read'):
+      return forbidden
+  else:
+    if not can_edit(row, user_id) and (forbidden := require_project_access(None, row['project_id'], 'collections.write')):
+      return forbidden
+    if base_version is not None and base_version != row['latest_version']:
+      return jsonify(stale_error(base_version, row['latest_version'])), 409
+
+  # inputs given by path: their ids, adding those the project doesn't have when the user can (like POST /inputs)
+  paths = [{"database": i[0], "path": i[1], "metadata": None} for i in inputs if isinstance(i, tuple)]
+  added = []
+  if paths:
+    if can('collections.write', project_id):
+      added = [r for r in catalog.add_inputs(project_id, paths) if r['new']]
+    ids_of = catalog.known_inputs(paths)
+    unknown = [p for p in paths if (p['database'], p['path']) not in ids_of]
+    if unknown:
+      db_session.rollback()
+      return jsonify({
+        "error": f"{len(unknown)} input{'s are' if len(unknown) > 1 else ' is'} not among the inputs of {project_id}: "
+                 + ', '.join(f"{p['database']}/{p['path']}" for p in unknown[:20]) + ('...' if len(unknown) > 20 else ''),
+        "reason": "unknown_inputs",
+      }), 400
+  else:
+    ids_of = {}
+  input_ids = list(dict.fromkeys(ids_of[i] if isinstance(i, tuple) else i for i in inputs))
+  try:
+    latest = catalog.version_of(row['id'], row['latest_version']) if row is not None else None
+    check_inputs(project_id, input_ids, allowed=catalog.member_ids(latest['id']) if latest else frozenset())
+  except CollectionError as e:
+    db_session.rollback()
+    return error_response(e)
+
+  if added:
+    audit('input.add', 'project', project_id, project_id, project_id=project_id, meta={
+      "added": len(added), "known": len(paths) - len(added), "with_metadata": 0, "from": "collections.save",
+      "databases": sorted({r['database'] for r in added})[:10], "paths": [r['path'] for r in added[:20]],
+    })
+  extra = {"created": False, "unchanged": False, "added_inputs": len(added)}
+  try:
+    if row is None:
+      collection_id = catalog.create_collection(project_id, name, description or '', input_ids, notes, user_id, shared=shared, source=source)
+      audit('collection.create', 'collection', collection_id, name, project_id=project_id,
+            meta={"version": 1, "size": len(input_ids), "shared": shared, "from_code": True, "script": (source or {}).get('script')})
+      number, extra['created'] = 1, True
+    else:
+      collection_id = row['id']
+      if description is not None and description != (row.get('description') or ''):
+        catalog.update_collection(collection_id, {'description': description})
+        audit('collection.update', 'collection', collection_id, row['name'], project_id=row['project_id'],
+              changes=capped(diff({'description': row.get('description')}, {'description': description})))
+      if latest is not None and [r['id'] for r in catalog.member_refs(latest['id'])] == input_ids:
+        number, extra['unchanged'] = row['latest_version'], True
+      else:
+        number = catalog.add_version(collection_id, row['latest_version'], input_ids, notes, user_id, source=source)
+        audit('collection.version', 'collection', collection_id, f"{row['name']}@{number}", project_id=row['project_id'],
+              meta={"version": number, "size": len(input_ids), "from_code": True, "script": (source or {}).get('script')})
+    db_session.commit()
+  except catalog.StaleVersion as e:
+    db_session.rollback()
+    return jsonify(stale_error(base_version, e.latest_version)), 409
+  except IntegrityError:
+    # created by someone else meanwhile: they win, the client saves again
+    db_session.rollback()
+    taken = catalog.name_taken(project_id, name)
+    latest_row = catalog.collection_by_id(taken) if taken is not None else None
+    return jsonify(stale_error(base_version, latest_row['latest_version'] if latest_row else 1)), 409
+  row = catalog.collection_by_id(collection_id)
+  body = answer(row, project_id, user_id, version=serialize_version(catalog.version_of(collection_id, number)), **extra)
+  return jsonify(body), 200 if extra['unchanged'] else 201
+
+
 def name_taken_response(project_id: str, name: str, taken_id: Optional[int], user_id: Optional[int]):
   """
   409: names are unique per project, personal collections included. Someone else's personal one: we don't say
@@ -361,7 +478,10 @@ def edit_collection(collection_id):
 
 @app.route("/api/v1/collections/<int:collection_id>/inputs", methods=['GET'])
 def collection_inputs(collection_id):
-  """{inputs: [Input with position], total, version, limit, offset}: a version's inputs, in their order. ?q= filters by path."""
+  """
+  {inputs: [Input with position], total, version, limit, offset}: a version's inputs, in their order. ?q= filters by
+  path. Inputs have `annotations` like on the Inputs page.
+  """
   row, project_id, error = get_collection(collection_id)
   if error:
     return error
@@ -373,8 +493,11 @@ def collection_inputs(collection_id):
   except CollectionError as e:
     return error_response(e)
   found = catalog.members(version['id'], readable_scope(project_id), search_tokens(request.args.get('q')), limit, offset)
+  # how many annotations each has, in the groups seen from the project, like on the Inputs page
+  groups = shown_annotation_groups(project_id, current_user_info()[1]) or []
+  inputs = with_annotation_counts([serialize_input(r) for r in found['inputs']], [g['id'] for g in groups])
   return jsonify({
-    "inputs": [serialize_input(r) for r in found['inputs']], "total": found['total'],
+    "inputs": inputs, "total": found['total'],
     "version": version['version'], "limit": limit, "offset": offset,
   })
 

@@ -52,6 +52,10 @@ tags:
     description: The inputs runs used, their thumbnails and files.
   - name: Collections
     description: Named, versioned lists of inputs, for batches (`collections:` in batch files).
+  - name: Annotations
+    description: >-
+      Rectangles drawn and labelled on inputs, in groups (`af-team/train-patches`, `~me/sandbox` for personal ones),
+      with the history of their changes.
   - name: Account
     description: Who you are, and which token you use.
   - name: Server
@@ -894,6 +898,9 @@ paths:
         - {name: sort, in: query, description: "`last_run`: the latest used first (default). `path`.", schema: {type: string, enum: [last_run, path], default: last_run}}
         - {name: facets, in: query, description: "`1`: count `total`, `databases` and `folders`. Default: on the first page only.", schema: {type: string, enum: ["0", "1"]}}
         - {name: fields, in: query, description: "`id`: only the ids of every input that matches, not a page (see above).", schema: {type: string, enum: [id]}}
+        - {name: annotation_group, in: query, description: "Only the inputs with annotations in this annotation group (one you see from the project, archived or not).", schema: {type: integer}}
+        - {name: label, in: query, description: "Only the inputs with annotations that have this label (in `annotation_group`, else in the groups you see).", schema: {type: string, maxLength: 100}}
+        - {name: annotated, in: query, description: "`1`: only the inputs with annotations (in `annotation_group`, else in the groups you see).", schema: {type: string, enum: ["0", "1"], default: "0"}}
         - $ref: "#/components/parameters/pageLimit"
         - $ref: "#/components/parameters/offset"
       responses:
@@ -920,11 +927,24 @@ paths:
                         folder: {type: string, description: "The folder's path, e.g. `night/street`: send it as `folder`."}
                         name: {type: string, description: "Its last part, e.g. `street`."}
                         count: {type: integer}
+                  annotation_groups:
+                    type: [array, "null"]
+                    description: >-
+                      The annotation groups you see from the project (not archived), with how many inputs that match the
+                      other filters have annotations in each, by name. Only groups with some.
+                    items: {type: object, properties: {id: {type: integer}, name: {type: string}, count: {type: integer}}}
+                  labels:
+                    type: [array, "null"]
+                    description: >-
+                      The labels of their annotations (in `annotation_group`, else in the groups you see), with how many
+                      inputs that match the other filters have each, the most frequent first (at most 200).
+                    items: {type: object, properties: {label: {type: string}, count: {type: integer}}}
                   limit: {type: integer}
                   offset: {type: integer}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: "`annotation_group` isn't a group you see from the project (`annotation_group_not_found`)."}
     post:
       tags: [Inputs]
       operationId: addInputs
@@ -1059,6 +1079,300 @@ paths:
                     properties:
                       thumbnail_url: {type: string}
 
+  /inputs/{input_id}/annotations:
+    get:
+      tags: [Annotations]
+      operationId: listInputAnnotations
+      summary: List an input's annotations
+      description: >-
+        The input's annotations (not deleted) in the annotation groups you see from the project: its and its
+        ancestors', and your personal ones. Only for inputs that runs of the project (or of its subprojects you read)
+        used, or in its collections. A run's input is its `test_input_id`: ask with the run's project.
+      parameters:
+        - $ref: "#/components/parameters/inputId"
+        - $ref: "#/components/parameters/project"
+        - {name: groups, in: query, description: "Only the annotations of these groups, e.g. `1,2`.", schema: {type: string}}
+      responses:
+        "200":
+          description: >-
+            Its annotations, and the groups seen from the project (not archived, and archived ones that have
+            annotations on it), with `count`, their annotations on this input.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  annotations: {type: array, items: {$ref: "#/components/schemas/Annotation"}}
+                  groups: {type: array, items: {$ref: "#/components/schemas/AnnotationGroup"}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [Annotations]
+      operationId: createAnnotation
+      summary: Add an annotation to an input
+      description: >-
+        A rectangle in the input's pixels: integers, `w` and `h` above 0, inside the image when `image_width` and
+        `image_height` (the input's size, to scale it on other images) are sent. You edit the group's annotations: you
+        created it, you're in its team, or (without a team) you have the developer role on its project. At most 10,000
+        annotations per input and group (`413`). `409` (`archived_group`) in an archived group.
+      parameters:
+        - $ref: "#/components/parameters/inputId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group, x, y, w, h]
+              properties:
+                group: {type: integer, description: The annotation group's id.}
+                x: {type: integer, minimum: 0}
+                y: {type: integer, minimum: 0}
+                w: {type: integer, minimum: 1}
+                h: {type: integer, minimum: 1}
+                image_width: {type: integer, minimum: 1}
+                image_height: {type: integer, minimum: 1}
+                labels: {$ref: "#/components/schemas/AnnotationLabels"}
+                fields: {$ref: "#/components/schemas/AnnotationFields"}
+                method: {type: string, default: manual, description: "`manual`, `script`, `import` or `model:<name>`."}
+      responses:
+        "201":
+          description: The annotation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Annotation"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {description: "The group is archived (`archived_group`)."}
+        "413": {description: "Too many annotations on this input in this group (`too_many_annotations`), or `fields` too big (`too_long`)."}
+
+  /annotation-groups:
+    get:
+      tags: [Annotations]
+      operationId: listAnnotationGroups
+      summary: List the annotation groups a project sees
+      description: >-
+        The groups of the project and of its ancestors, and your personal ones (`~you/...`), by name, with how many
+        annotations each has. Archived ones only with `archived=1`.
+      parameters:
+        - $ref: "#/components/parameters/project"
+        - {name: archived, in: query, description: "`1`: also the archived groups.", schema: {type: string, enum: ["0", "1"], default: "0"}}
+      responses:
+        "200":
+          description: The groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups: {type: array, items: {$ref: "#/components/schemas/AnnotationGroup"}}
+                  can_create: {type: boolean, description: "You can create groups: personal ones (`~you/...`), and the project's if `can_share`."}
+                  can_share: {type: boolean, description: You can create the project's groups (the developer role).}
+                  my_teams:
+                    type: array
+                    description: Your groups (teams), that you can give an annotation group to.
+                    items: {type: object, properties: {id: {type: integer}, name: {type: string}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [Annotations]
+      operationId: createAnnotationGroup
+      summary: Create an annotation group
+      description: >-
+        Names like collections' (`af-team/train-patches`). `~you/...` (your user name) makes a personal group, that
+        only you see and edit: anyone who reads the project makes them. Others need the developer role. With a `team`
+        (a group of users, yours unless you own the project), its members edit its annotations. `409` (`name_taken`)
+        if the project has a group with this name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, name]
+              properties:
+                project: {type: string}
+                name: {type: string, maxLength: 200}
+                description: {type: string, maxLength: 20000}
+                team: {type: [integer, "null"], description: A group of users' id.}
+      responses:
+        "201":
+          description: The group.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AnnotationGroup"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/NameTaken"}
+
+  /annotation-groups/{group_id}:
+    patch:
+      tags: [Annotations]
+      operationId: editAnnotationGroup
+      summary: Rename, describe, archive an annotation group, or set its team
+      description: >-
+        Its creator or the project's owners. Archived groups are hidden from lists and pickers; their annotations stay
+        readable. `POST` does the same, for proxies that drop the body of `PATCH`.
+      parameters:
+        - $ref: "#/components/parameters/annotationGroupId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, maxLength: 200}
+                description: {type: string, maxLength: 20000}
+                team: {type: [integer, "null"]}
+                archived: {type: boolean}
+      responses:
+        "200":
+          description: The group.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AnnotationGroup"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/NameTaken"}
+
+  /annotation-groups/{group_id}/labels:
+    get:
+      tags: [Annotations]
+      operationId: listAnnotationGroupLabels
+      summary: List the labels of an annotation group
+      description: For autocomplete. The labels that contain `q` (those starting with it first), the most used first.
+      parameters:
+        - $ref: "#/components/parameters/annotationGroupId"
+        - {name: q, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, default: 20, maximum: 200}}
+        - {name: project, in: query, required: false, description: The project you look from (by default the group's)., schema: {type: string}}
+      responses:
+        "200":
+          description: The labels.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  labels:
+                    type: array
+                    items: {type: object, properties: {label: {type: string}, count: {type: integer}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /annotations/{annotation_id}:
+    patch:
+      tags: [Annotations]
+      operationId: editAnnotation
+      summary: Move, resize or relabel an annotation
+      description: >-
+        Send the `version` you saw: `409` (`stale_version`) with the current `annotation` when someone changed it
+        meanwhile. The image size it was drawn on stays. `POST` does the same, for proxies that drop the body of `PATCH`.
+      parameters:
+        - $ref: "#/components/parameters/annotationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: {type: integer}
+                x: {type: integer, minimum: 0}
+                y: {type: integer, minimum: 0}
+                w: {type: integer, minimum: 1}
+                h: {type: integer, minimum: 1}
+                labels: {$ref: "#/components/schemas/AnnotationLabels"}
+                fields: {$ref: "#/components/schemas/AnnotationFields"}
+      responses:
+        "200":
+          description: The annotation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Annotation"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/StaleAnnotation"}
+    delete:
+      tags: [Annotations]
+      operationId: deleteAnnotation
+      summary: Delete an annotation
+      description: Hides it, with its history. `POST /annotations/{annotation_id}/restore` undoes it.
+      parameters:
+        - $ref: "#/components/parameters/annotationId"
+        - {name: version, in: query, required: true, description: The version you saw., schema: {type: integer}}
+      responses:
+        "200":
+          description: The annotation, with `deleted_at`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Annotation"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/StaleAnnotation"}
+
+  /annotations/{annotation_id}/restore:
+    post:
+      tags: [Annotations]
+      operationId: restoreAnnotation
+      summary: Restore a deleted annotation
+      parameters:
+        - $ref: "#/components/parameters/annotationId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: {type: integer, description: "The version you saw (optional)."}
+      responses:
+        "200":
+          description: The annotation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Annotation"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/StaleAnnotation"}
+
+  /annotations/{annotation_id}/history:
+    get:
+      tags: [Annotations]
+      operationId: getAnnotationHistory
+      summary: Get the history of an annotation
+      description: Every change, the latest first, with who made it and what it was before. Deleted annotations too.
+      parameters:
+        - $ref: "#/components/parameters/annotationId"
+      responses:
+        "200":
+          description: Its changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changes: {type: array, items: {$ref: "#/components/schemas/AnnotationChange"}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /collections:
     get:
       tags: [Collections]
@@ -1120,6 +1434,66 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/NameTaken"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+
+  /collections/save:
+    post:
+      tags: [Collections]
+      operationId: saveCollection
+      summary: Save a collection from code
+      description: >-
+        What `qaboard.collections.save()` and `qa collections save` call. Creates the collection (`201`, `created`),
+        or saves its next version (`201`) when its inputs differ from the latest version's, else saves nothing (`200`,
+        `unchanged`). Inputs are ids, or `{database, path}` (`path` relative to `database`, like runs send them):
+        those QA-Board doesn't know are added to the project like `POST /inputs`, with the developer role, else they
+        are `unknown_inputs`. A new collection is shared with the project (the developer role) unless `shared` is
+        false. `409` (`stale_version`) when `base_version` isn't the latest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, name, inputs]
+              properties:
+                project: {type: string}
+                name: {type: string, maxLength: 200}
+                inputs:
+                  type: array
+                  maxItems: 50000
+                  items:
+                    oneOf:
+                      - {type: integer}
+                      - type: object
+                        required: [database, path]
+                        properties:
+                          database: {type: string, example: /mnt/data}
+                          path: {type: string, example: night/street/0001.raw}
+                notes: {type: string, maxLength: 20000}
+                description: {type: string, maxLength: 20000, description: Changes the collection's description when sent.}
+                base_version: {type: integer, description: "The version the changes start from: `409` if it isn't the latest."}
+                shared: {type: boolean, default: true, description: For a new collection.}
+                source: {$ref: "#/components/schemas/CollectionSource"}
+      responses:
+        "200":
+          description: Nothing changed (`unchanged`); the collection, with its latest `version`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SavedCollection"}
+        "201":
+          description: The collection, with the `version` saved.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SavedCollection"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: "`base_version` isn't the latest (`stale_version`), or the name is someone else's personal collection (`name_taken`)."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "413": {$ref: "#/components/responses/TooLarge"}
 
   /collections/resolve:
@@ -1504,6 +1878,17 @@ components:
       in: path
       required: true
       schema: {type: integer}
+    annotationGroupId:
+      name: group_id
+      in: path
+      required: true
+      description: An annotation group's id.
+      schema: {type: integer}
+    annotationId:
+      name: annotation_id
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
     collectionVersion:
       name: version
       in: query
@@ -1681,6 +2066,19 @@ components:
               - type: object
                 properties:
                   id: {type: integer}
+    StaleAnnotation:
+      description: >-
+        Someone changed the annotation meanwhile (`stale_version`, with the current `annotation` and its `version`),
+        it is deleted (`deleted`, `already_deleted`), or isn't (`not_deleted`).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - type: object
+                properties:
+                  version: {type: integer}
+                  annotation: {$ref: "#/components/schemas/Annotation"}
     TooLarge:
       description: "Too many inputs (`too_many_inputs`: at most 50,000), or a text too long (`too_long`)."
       content:
@@ -1987,6 +2385,7 @@ components:
         output_type:
           type: string
           description: "`optim_iteration` for the evaluations of automated tunings, else usually empty."
+        test_input_id: {type: integer, description: "The input's id: see `/inputs/{input_id}` and its annotations."}
         test_input_database: {type: string, description: "The input's database, e.g. a dataset's folder."}
         test_input_path: {type: string, description: The input's path, relative to its database.}
         test_input_metadata: {type: object, description: The input's metadata, from the batch definition., additionalProperties: true}
@@ -2217,6 +2616,7 @@ components:
         last_run_at: {type: [string, "null"], format: date-time}
         thumbnail_url: {type: string, description: "`/api/v1/inputs/<id>/thumbnail`: add `?size=`."}
         url: {type: [string, "null"], description: "The file under `/s/`, like runs' `output_dir_url`. `null` when the database isn't an absolute path."}
+        annotations: {type: integer, description: "In lists: how many annotations it has in the annotation groups shown (the one filtered by, else those you see from the project)."}
 
     InputRun:
       type: object
@@ -2288,6 +2688,104 @@ components:
         created_at: {type: string, format: date-time}
         notes: {type: string}
         size: {type: integer}
+        source: {oneOf: [{$ref: "#/components/schemas/CollectionSource"}, {type: "null"}], description: "Saved from code: where from. Else null."}
+
+    CollectionSource:
+      type: object
+      description: Where a version saved from code came from, as the SDK records it.
+      additionalProperties: true
+      properties:
+        script: {type: string, example: tools/triage.py}
+        argv: {type: array, items: {type: string}}
+        host: {type: string}
+        cwd: {type: string}
+        git:
+          type: object
+          properties:
+            repository: {type: string}
+            commit: {type: string}
+            dirty: {type: boolean}
+
+    SavedCollection:
+      allOf:
+        - $ref: "#/components/schemas/Collection"
+        - type: object
+          properties:
+            version: {$ref: "#/components/schemas/CollectionVersion"}
+            created: {type: boolean, description: The collection was created.}
+            unchanged: {type: boolean, description: "Its inputs were those of the latest version: nothing saved."}
+            added_inputs: {type: integer, description: Inputs given by path that the project didn't have, added.}
+
+    AnnotationGroup:
+      type: object
+      description: >-
+        A group of annotations of a project, seen from it and its subprojects. Personal groups (`~you/...`) are their
+        creator's only.
+      properties:
+        id: {type: integer}
+        project: {type: string}
+        name: {type: string, example: af-team/train-patches}
+        description: {type: string}
+        team:
+          type: [object, "null"]
+          description: The group of users whose members edit its annotations.
+          properties: {id: {type: integer}, name: {type: [string, "null"]}}
+        personal: {type: boolean}
+        created_by: {$ref: "#/components/schemas/UserRef"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        archived: {type: boolean}
+        archived_at: {type: [string, "null"], format: date-time}
+        can_edit: {type: boolean, description: You can add, change and delete its annotations.}
+        can_manage: {type: boolean, description: "You can rename, describe, archive it and set its team: its creator or the project's owners."}
+        inherited: {type: boolean, description: "It's an ancestor's group."}
+        count: {type: integer, description: "Its annotations: all of them in lists of groups, those on the input with an input's annotations."}
+
+    Annotation:
+      type: object
+      description: A rectangle in an input's pixels.
+      properties:
+        id: {type: integer, format: int64}
+        group: {type: integer, description: Its annotation group's id.}
+        input: {type: integer, description: The input's id.}
+        x: {type: integer}
+        y: {type: integer}
+        w: {type: integer}
+        h: {type: integer}
+        image_width: {type: [integer, "null"], description: "The input's size when drawn, if known: to scale it on images of other sizes."}
+        image_height: {type: [integer, "null"]}
+        labels: {$ref: "#/components/schemas/AnnotationLabels"}
+        fields: {$ref: "#/components/schemas/AnnotationFields"}
+        method: {type: string, description: "`manual`, `script`, `import` or `model:<name>`."}
+        output: {type: [integer, "null"], description: The run that made it.}
+        created_by: {$ref: "#/components/schemas/UserRef"}
+        created_at: {type: string, format: date-time}
+        updated_by: {$ref: "#/components/schemas/UserRef"}
+        updated_at: {type: string, format: date-time}
+        deleted_at: {type: [string, "null"], format: date-time}
+        version: {type: integer, description: "+1 per change: send it with edits."}
+        can_edit: {type: boolean}
+
+    AnnotationLabels:
+      type: array
+      maxItems: 50
+      description: Trimmed, without duplicates.
+      items: {type: string, maxLength: 100}
+
+    AnnotationFields:
+      type: object
+      additionalProperties: true
+      description: "Free `{key: value}`, at most 4 KB of JSON."
+
+    AnnotationChange:
+      type: object
+      properties:
+        version: {type: integer, description: The annotation's version after the change.}
+        action: {type: string, enum: [create, update, delete, restore]}
+        changed_by: {$ref: "#/components/schemas/UserRef"}
+        changed_at: {type: string, format: date-time}
+        before: {type: [object, "null"], description: "`x, y, w, h, image_width, image_height, labels, fields, method` before (null for create)."}
+        after: {type: object, description: The same, after.}
 
     Pin:
       type: object

@@ -126,13 +126,34 @@ LIVE = """EXISTS (
 )"""
 
 
+# An input has annotations, not deleted, in the groups (docs/design/annotations.md): one probe per input in the partial
+# index ix_annotations_live_test_input_id (test_input_id) WHERE deleted_at IS NULL, then the group (and label) of its few rows
+def has_annotations(alias: str, groups_param: str, with_label: bool) -> str:
+  label = " AND a.labels @> ARRAY[CAST(:annotation_label AS text)]" if with_label else ""
+  return f"""EXISTS (
+  SELECT 1 FROM annotations a
+  WHERE a.test_input_id = {alias}.id AND a.deleted_at IS NULL AND a.group_id = ANY(CAST(:{groups_param} AS integer[])){label}
+)"""
+
+
 class InputFilters:
-  """The WHERE clauses of the Inputs tab's filters, on test_inputs `ti`"""
-  def __init__(self, tokens: Iterable[str] = (), folder: str = '', database: Optional[str] = None, live: bool = True):
+  """
+  The WHERE clauses of the Inputs tab's filters, on test_inputs `ti`.
+  Annotations: `annotation_groups` are the groups whose annotations count (those the user sees from the project, not
+  archived: the API lists them), `annotation_group` one of them to filter by, `label` a label its annotations have,
+  `annotated` only inputs with annotations (in the group, else in any of `annotation_groups`).
+  """
+  def __init__(self, tokens: Iterable[str] = (), folder: str = '', database: Optional[str] = None, live: bool = True,
+               annotation_groups: Sequence[int] = (), annotation_group: Optional[int] = None, label: Optional[str] = None,
+               annotated: bool = False):
     self.tokens = list(tokens)
     self.folder = folder or ''
     self.database = database or None
     self.live = live
+    self.annotation_groups = list(annotation_groups)
+    self.annotation_group = annotation_group
+    self.label = label or None
+    self.annotated = annotated
 
   def params(self) -> dict:
     params = {f"token_{i}": f"%{like_escape(token)}%" for i, token in enumerate(self.tokens)}
@@ -141,7 +162,26 @@ class InputFilters:
     params['folder_prefix_length'] = len(self.folder) + 1 if self.folder else 0
     if self.database:
       params['database'] = self.database
+    params['annotation_groups'] = self.annotation_groups
+    params['annotation_group_ids'] = self.counted_groups()
+    if self.label:
+      params['annotation_label'] = self.label
     return params
+
+  def counted_groups(self) -> List[int]:
+    """The groups whose annotations the filters and counts look at: the group filtered by, else all those shown"""
+    return [self.annotation_group] if self.annotation_group is not None else self.annotation_groups
+
+  def annotations(self, alias: str = 'ti', group: bool = True, label: bool = True) -> List[str]:
+    """
+    The annotation filters. Facets ignore their own: the groups' counts ignore the group filter (`group` False), the
+    labels' the label filter (`label` False)
+    """
+    by_group = group and self.annotation_group is not None
+    by_label = label and self.label is not None
+    if not (self.annotated or by_group or by_label):
+      return []
+    return [has_annotations(alias, 'annotation_group_ids' if by_group else 'annotation_groups', by_label)]
 
   def search(self) -> List[str]:
     clauses = [f"ti.path ILIKE :token_{i} ESCAPE '\\'" for i in range(len(self.tokens))]
@@ -169,6 +209,7 @@ ORDERS = {
 # facets: at most that many values
 MAX_DATABASES = 200
 MAX_FOLDERS = 1000
+MAX_LABELS = 200
 
 
 def list_inputs(projects: Sequence[str], filters: InputFilters, sort: str = 'last_run', limit: int = 100, offset: int = 0,
@@ -186,31 +227,51 @@ def list_inputs(projects: Sequence[str], filters: InputFilters, sort: str = 'las
     WITH s AS ({scope})
     SELECT {INPUT_COLUMNS}
     FROM s JOIN test_inputs ti ON ti.id = s.test_input_id
-    {where(filters.search() + filters.in_folder() + filters.in_database())}
+    {where(filters.search() + filters.in_folder() + filters.in_database() + filters.annotations())}
     ORDER BY {ORDERS[sort]}
     LIMIT :limit OFFSET :offset
   """, params)
   if with_facets is None:
     with_facets = offset == 0
   if not with_facets:
-    return {"inputs": page, "total": None, "databases": None, "folders": None}
+    return {"inputs": page, "total": None, "databases": None, "folders": None, "annotation_groups": None, "labels": None}
   # The search and live filters once (EXISTS on outputs is the costly part), then the counts
   folder_name = "split_part(substr(m.path, :folder_prefix_length + 1), '/', 1)"
+  annotations = filters.annotations('m')
+  # the annotation facets: inputs with annotations of each group / with each label, with the other filters
+  in_place = filters.in_folder('m') + filters.in_database('m')
+  label_join = " AND a.labels @> ARRAY[CAST(:annotation_label AS text)]" if filters.label else ""
+  annotation_facets = f"""
+      (SELECT coalesce(json_agg(ag), '[]') FROM (
+        SELECT a.group_id AS id, count(DISTINCT m.id) AS count
+        FROM m JOIN annotations a ON a.test_input_id = m.id AND a.deleted_at IS NULL
+          AND a.group_id = ANY(CAST(:annotation_groups AS integer[])){label_join}
+        {where(in_place)}
+        GROUP BY a.group_id
+      ) ag) AS annotation_groups,
+      (SELECT coalesce(json_agg(al), '[]') FROM (
+        SELECT l.label, count(DISTINCT m.id) AS count
+        FROM m JOIN annotations a ON a.test_input_id = m.id AND a.deleted_at IS NULL
+          AND a.group_id = ANY(CAST(:annotation_group_ids AS integer[]))
+        CROSS JOIN LATERAL unnest(a.labels) AS l(label)
+        {where(in_place)}
+        GROUP BY l.label ORDER BY count(DISTINCT m.id) DESC, l.label LIMIT {MAX_LABELS}
+      ) al) AS labels,""" if filters.annotation_groups else ""
   facets = one_of(f"""
     WITH s AS ({scope}),
     m AS MATERIALIZED (
       SELECT ti.id, ti.database, ti.path FROM s JOIN test_inputs ti ON ti.id = s.test_input_id
       {where(filters.search())}
     )
-    SELECT
-      (SELECT count(*) FROM m {where(filters.in_folder('m') + filters.in_database('m'))}) AS total,
+    SELECT {annotation_facets}
+      (SELECT count(*) FROM m {where(filters.in_folder('m') + filters.in_database('m') + annotations)}) AS total,
       (SELECT coalesce(json_agg(d), '[]') FROM (
-        SELECT m.database, count(*) AS count FROM m {where(filters.in_folder('m'))}
+        SELECT m.database, count(*) AS count FROM m {where(filters.in_folder('m') + annotations)}
         GROUP BY m.database ORDER BY count(*) DESC, m.database LIMIT {MAX_DATABASES}
       ) d) AS databases,
       (SELECT coalesce(json_agg(f), '[]') FROM (
         SELECT {folder_name} AS name, count(*) AS count FROM m
-        {where(filters.in_folder('m') + filters.in_database('m') + ["strpos(substr(m.path, :folder_prefix_length + 1), '/') > 0"])}
+        {where(filters.in_folder('m') + filters.in_database('m') + annotations + ["strpos(substr(m.path, :folder_prefix_length + 1), '/') > 0"])}
         GROUP BY 1 ORDER BY 1 LIMIT {MAX_FOLDERS}
       ) f) AS folders
   """, params) or {}
@@ -220,6 +281,9 @@ def list_inputs(projects: Sequence[str], filters: InputFilters, sort: str = 'las
     "total": int(facets.get('total') or 0),
     "databases": [{"database": d['database'], "count": int(d['count'])} for d in facets.get('databases') or []],
     "folders": [{"folder": prefix + f['name'], "name": f['name'], "count": int(f['count'])} for f in facets.get('folders') or []],
+    # {id, count}: the API adds their names
+    "annotation_groups": [{"id": g['id'], "count": int(g['count'])} for g in facets.get('annotation_groups') or []],
+    "labels": [{"label": label['label'], "count": int(label['count'])} for label in facets.get('labels') or []],
   }
 
 
@@ -233,7 +297,7 @@ def list_input_ids(projects: Sequence[str], filters: InputFilters, sort: str = '
     WITH s AS ({scope_sql(projects)})
     SELECT ti.id
     FROM s JOIN test_inputs ti ON ti.id = s.test_input_id
-    {where(filters.search() + filters.in_folder() + filters.in_database())}
+    {where(filters.search() + filters.in_folder() + filters.in_database() + filters.annotations())}
     ORDER BY {ORDERS[sort]}
     LIMIT :limit
   """, params)
@@ -409,25 +473,30 @@ INSERT_MEMBERS = """
 """
 
 
-def insert_version(collection_id: int, version: int, input_ids: Sequence[int], notes: str, user_id: Optional[int], now: datetime.datetime) -> int:
+def insert_version(collection_id: int, version: int, input_ids: Sequence[int], notes: str, user_id: Optional[int], now: datetime.datetime,
+                   source: Optional[dict] = None) -> int:
+  """`source`: where a version saved from code came from (POST /collections/save), None from the web app"""
+  import json
   row = one_of("""
-    INSERT INTO collection_versions (collection_id, version, created_by, created_at, notes, size)
-    VALUES (:collection_id, :version, :user_id, :now, :notes, :size) RETURNING id
-  """, {"collection_id": collection_id, "version": version, "user_id": user_id, "now": now, "notes": notes, "size": len(input_ids)})
+    INSERT INTO collection_versions (collection_id, version, created_by, created_at, notes, size, source)
+    VALUES (:collection_id, :version, :user_id, :now, :notes, :size, CAST(:source AS jsonb)) RETURNING id
+  """, {"collection_id": collection_id, "version": version, "user_id": user_id, "now": now, "notes": notes, "size": len(input_ids),
+        "source": json.dumps(source, ensure_ascii=False, default=str) if source else None})
   if input_ids:
     execute(INSERT_MEMBERS, {"version_id": row['id'], "ids": list(input_ids)})
   return row['id']
 
 
 def create_collection(project_id: str, name: str, description: str, input_ids: Sequence[int], notes: str,
-                      user_id: Optional[int], now: Optional[datetime.datetime] = None, shared: bool = True) -> int:
+                      user_id: Optional[int], now: Optional[datetime.datetime] = None, shared: bool = True,
+                      source: Optional[dict] = None) -> int:
   """A new collection, with its version 1, shared with the project or personal (its creator's). Its id."""
   now = now or utcnow()
   row = one_of("""
     INSERT INTO collections (project_id, name, description, created_by, created_at, updated_at, latest_version, shared)
     VALUES (:project, :name, :description, :user_id, :now, :now, 1, :shared) RETURNING id
   """, {"project": project_id, "name": name, "description": description, "user_id": user_id, "now": now, "shared": bool(shared)})
-  insert_version(row['id'], 1, input_ids, notes, user_id, now)
+  insert_version(row['id'], 1, input_ids, notes, user_id, now, source=source)
   return row['id']
 
 
@@ -438,7 +507,7 @@ class StaleVersion(Exception):
 
 
 def add_version(collection_id: int, base_version: int, input_ids: Sequence[int], notes: str, user_id: Optional[int],
-                now: Optional[datetime.datetime] = None) -> int:
+                now: Optional[datetime.datetime] = None, source: Optional[dict] = None) -> int:
   """Saves version N+1 if `base_version` is still the latest (N), else raises StaleVersion. The new version's number."""
   now = now or utcnow()
   row = one_of("SELECT latest_version FROM collections WHERE id = :id FOR UPDATE", {"id": collection_id})
@@ -447,7 +516,7 @@ def add_version(collection_id: int, base_version: int, input_ids: Sequence[int],
   if row['latest_version'] != base_version:
     raise StaleVersion(row['latest_version'])
   version = row['latest_version'] + 1
-  insert_version(collection_id, version, input_ids, notes, user_id, now)
+  insert_version(collection_id, version, input_ids, notes, user_id, now, source=source)
   execute("UPDATE collections SET latest_version = :version, updated_at = :now WHERE id = :id", {"id": collection_id, "version": version, "now": now})
   return version
 
@@ -468,7 +537,7 @@ def update_collection(collection_id: int, fields: dict, now: Optional[datetime.d
 
 
 VERSION_COLUMNS = """
-  v.id, v.version, v.created_at, v.notes, v.size,
+  v.id, v.version, v.created_at, v.notes, v.size, v.source,
   u.id AS created_by_id, u.user_name AS created_by_user_name, u.full_name AS created_by_full_name
 """
 
@@ -521,6 +590,17 @@ def members(version_id: int, projects: Sequence[str], tokens: Iterable[str] = ()
   for row in rows:
     row.pop('total', None)
   return {"inputs": rows, "total": total}
+
+
+def known_inputs(pairs: Sequence[dict]) -> Dict[tuple, int]:
+  """{(database, path): id} of the inputs QA-Board knows among [{database, path}]"""
+  if not pairs:
+    return {}
+  rows = rows_of("""
+    SELECT ti.id, ti.database, ti.path FROM unnest(CAST(:databases AS text[]), CAST(:paths AS text[])) AS t(database, path)
+    JOIN test_inputs ti ON ti.database = t.database AND ti.path = t.path
+  """, {"databases": [p['database'] for p in pairs], "paths": [p['path'] for p in pairs]})
+  return {(row['database'], row['path']): row['id'] for row in rows}
 
 
 def member_ids(version_id: int) -> set:

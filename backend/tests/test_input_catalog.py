@@ -1,7 +1,7 @@
 """
 The SQL of inputs and collections (backend/input_catalog.py), on a real PostgreSQL: set QABOARD_TEST_DATABASE_URL
 (postgresql://user:password@host/db). It works in temporary tables, in a transaction that is rolled back: nothing is
-written. The tables are those of the migration b8d0f2a4c6e1, and the columns of the others that the SQL reads.
+written. The tables are those of the migrations b8d0f2a4c6e1 and f3a5c7e9b1d2, and the columns of the others that the SQL reads.
 """
 import os
 import re
@@ -62,7 +62,7 @@ def db(monkeypatch):
       CREATE TEMPORARY TABLE collection_versions (
         id serial PRIMARY KEY, collection_id integer NOT NULL REFERENCES collections (id) ON DELETE CASCADE, version integer NOT NULL,
         created_by integer REFERENCES users (id) ON DELETE SET NULL, created_at timestamp NOT NULL, notes text NOT NULL DEFAULT '',
-        size integer NOT NULL DEFAULT 0, UNIQUE (collection_id, version)
+        size integer NOT NULL DEFAULT 0, source jsonb, UNIQUE (collection_id, version)
       ) ON COMMIT DROP;
       CREATE TEMPORARY TABLE collection_members (
         version_id integer REFERENCES collection_versions (id) ON DELETE CASCADE, position integer,
@@ -79,6 +79,35 @@ def db(monkeypatch):
         UNIQUE (collection_id, group_id)
       ) ON COMMIT DROP;
       CREATE UNIQUE INDEX ON collection_pins (collection_id) WHERE group_id IS NULL;
+
+      -- the migration f3a5c7e9b1d2 (docs/design/annotations.md)
+      CREATE TEMPORARY TABLE annotation_groups (
+        id serial PRIMARY KEY, project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE, name text NOT NULL,
+        description text NOT NULL DEFAULT '', team_id integer REFERENCES groups (id) ON DELETE SET NULL,
+        personal boolean NOT NULL DEFAULT false, created_by integer REFERENCES users (id) ON DELETE SET NULL,
+        created_at timestamp NOT NULL, updated_at timestamp NOT NULL, archived_at timestamp,
+        CONSTRAINT uq_annotation_groups_project_id_name UNIQUE (project_id, name)
+      ) ON COMMIT DROP;
+      CREATE TEMPORARY TABLE annotations (
+        id bigserial PRIMARY KEY, group_id integer NOT NULL REFERENCES annotation_groups (id) ON DELETE CASCADE,
+        test_input_id integer NOT NULL REFERENCES test_inputs (id) ON DELETE CASCADE,
+        x integer NOT NULL, y integer NOT NULL, w integer NOT NULL, h integer NOT NULL, image_width integer, image_height integer,
+        labels text[] NOT NULL DEFAULT '{}', fields jsonb NOT NULL DEFAULT '{}', method text NOT NULL DEFAULT 'manual',
+        output_id integer REFERENCES outputs (id) ON DELETE SET NULL,
+        created_by integer REFERENCES users (id) ON DELETE SET NULL, created_at timestamp NOT NULL,
+        updated_by integer REFERENCES users (id) ON DELETE SET NULL, updated_at timestamp NOT NULL,
+        deleted_at timestamp, version integer NOT NULL DEFAULT 1,
+        CONSTRAINT ck_annotations_size CHECK (w > 0 AND h > 0)
+      ) ON COMMIT DROP;
+      CREATE INDEX ON annotations (test_input_id) WHERE deleted_at IS NULL;
+      CREATE INDEX ON annotations (group_id, test_input_id);
+      CREATE INDEX ON annotations USING gin (labels);
+      CREATE TEMPORARY TABLE annotation_changes (
+        id bigserial PRIMARY KEY, annotation_id bigint NOT NULL REFERENCES annotations (id) ON DELETE CASCADE,
+        version integer NOT NULL, action text NOT NULL, changed_by integer REFERENCES users (id) ON DELETE SET NULL,
+        changed_at timestamp NOT NULL, before jsonb, after jsonb NOT NULL
+      ) ON COMMIT DROP;
+      CREATE INDEX ON annotation_changes (annotation_id, version);
     """)
 
     class Result:
@@ -459,3 +488,17 @@ def test_favorites_and_pins(db, inputs, people):
   db.cursor.execute("DELETE FROM group_members WHERE group_id = 6")
   assert catalog.group_ids_of(2) == [5] and catalog.group_ids_of(1) == [] and catalog.group_ids_of(None) == []
   assert catalog.group_exists(6) and not catalog.group_exists(7)
+
+
+def test_versions_saved_from_code(db, inputs, people):
+  source = {"script": "tools/triage.py", "argv": ["--night"], "host": "build-1", "cwd": "/src", "git": {"repository": "r", "commit": "a1b2", "dirty": False}}
+  collection_id = catalog.create_collection('a', 'from-code', '', [inputs.street], '', 1, NOW, source=source)
+  assert catalog.version_of(collection_id, 1)['source'] == source
+  assert catalog.add_version(collection_id, 1, [inputs.rain1], '', 1, NOW) == 2
+  assert [v['source'] for v in catalog.versions_of(collection_id)] == [None, source]
+
+
+def test_known_inputs(db, inputs):
+  found = catalog.known_inputs([{"database": "/data", "path": "night/street.png"}, {"database": "/other", "path": "night/street.png"}, {"database": "/data", "path": "nope.png"}])
+  assert found == {("/data", "night/street.png"): inputs.street, ("/other", "night/street.png"): inputs.other}
+  assert catalog.known_inputs([]) == {}

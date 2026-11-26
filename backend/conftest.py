@@ -106,7 +106,8 @@ def pytest_configure():
     models_mod.outputs_of_batches = MagicMock()
     models_mod.BatchNotification = MagicMock()
     models_mod.UsageEvent = MagicMock()
-    for name in ('InputProject', 'Collection', 'CollectionVersion', 'CollectionMember', 'CollectionFavorite', 'CollectionPin'):
+    for name in ('InputProject', 'Collection', 'CollectionVersion', 'CollectionMember', 'CollectionFavorite', 'CollectionPin',
+                 'AnnotationGroup', 'Annotation', 'AnnotationChange'):
         setattr(models_mod, name, MagicMock())
     sys.modules['backend.models'] = models_mod
     sys.modules['backend.backend'] = types.ModuleType('backend.backend')
